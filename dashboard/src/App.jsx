@@ -3,6 +3,7 @@ import ScheduleForm from "./components/ScheduleForm";
 import ScheduleTable from "./components/ScheduleTable";
 import DeviceStatus from "./components/DeviceStatus";
 import DoseLogs from "./components/DoseLogs";
+import SimulationControl from "./components/SimulationControl";
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
       <main>
         <ScheduleForm />
         <ScheduleTable />
+        <SimulationControl />
         <DeviceStatus />
         <DoseLogs />
       </main>
