@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { onValue, ref } from "firebase/database";
 import { database } from "../firebase";
-import { isDeviceOnline } from "../utils/dateUtils";
+import { getDeviceTitle, isDeviceOnline, normalizeDeviceRecord } from "../utils/deviceData";
 
 function DeviceList({ selectedDeviceId, onSelectDevice }) {
   const [devices, setDevices] = useState([]);
-  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     const devicesRef = ref(database, "devices");
@@ -13,12 +12,9 @@ function DeviceList({ selectedDeviceId, onSelectDevice }) {
     const unsubscribe = onValue(devicesRef, (snapshot) => {
       const data = snapshot.val() || {};
 
-      const deviceList = Object.entries(data).map(([id, value]) => ({
-        id,
-        deviceName: value.deviceName || id,
-        deviceType: value.deviceType || "unknown",
-        status: value.status || {},
-      }));
+      const deviceList = Object.entries(data)
+        .map(([id, value]) => normalizeDeviceRecord(id, value))
+        .sort((left, right) => left.id.localeCompare(right.id));
 
       setDevices(deviceList);
 
@@ -29,14 +25,6 @@ function DeviceList({ selectedDeviceId, onSelectDevice }) {
 
     return () => unsubscribe();
   }, [selectedDeviceId, onSelectDevice]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTick((value) => value + 1);
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, []);
 
   return (
     <div className="card">
@@ -56,8 +44,8 @@ function DeviceList({ selectedDeviceId, onSelectDevice }) {
                 className={`device-card ${isSelected ? "selected" : ""}`}
                 onClick={() => onSelectDevice(device.id)}
               >
-                <strong>{device.deviceName}</strong>
-                <span>{device.id}</span>
+                <strong>{getDeviceTitle(device)}</strong>
+                {device.description ? <span>{device.description}</span> : null}
                 <span>{online ? "Online" : "Offline"}</span>
                 <span>State: {device.status.currentState || "UNKNOWN"}</span>
                 <span>Last seen: {device.status.lastSeen || "Not available"}</span>

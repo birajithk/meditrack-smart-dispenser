@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { ref, onValue } from "firebase/database";
 import { database } from "../firebase";
-import { isDeviceOnline } from "../utils/dateUtils";
+import { getDeviceTitle, isDeviceOnline, normalizeDeviceRecord } from "../utils/deviceData";
 
 function DeviceStatus({ deviceId }) {
   const [device, setDevice] = useState(null);
-  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     if (!deviceId) return;
@@ -13,19 +12,11 @@ function DeviceStatus({ deviceId }) {
     const deviceRef = ref(database, `devices/${deviceId}`);
 
     const unsubscribe = onValue(deviceRef, (snapshot) => {
-      setDevice(snapshot.val());
+      setDevice(normalizeDeviceRecord(deviceId, snapshot.val() || {}));
     });
 
     return () => unsubscribe();
   }, [deviceId]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTick((value) => value + 1);
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, []);
 
   if (!deviceId) {
     return (
@@ -44,12 +35,14 @@ function DeviceStatus({ deviceId }) {
       <h2>Selected Device Status</h2>
 
       <p>
-        <strong>Device Name:</strong> {device?.deviceName || deviceId}
+        <strong>Device:</strong> {getDeviceTitle(device) || deviceId}
       </p>
 
-      <p>
-        <strong>Device ID:</strong> {deviceId}
-      </p>
+      {device?.description ? (
+        <p>
+          <strong>Description:</strong> {device.description}
+        </p>
+      ) : null}
 
       <p>
         <strong>Online:</strong> {online ? "Yes" : "No"}
