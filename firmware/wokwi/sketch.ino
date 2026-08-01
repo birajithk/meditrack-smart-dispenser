@@ -2,6 +2,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <ESP32Servo.h>
+#include <time.h>
 
 // =====================
 // Wi-Fi config for Wokwi
@@ -14,6 +15,8 @@ const char* WIFI_PASSWORD = "";
 // =====================
 const String FIREBASE_URL = "https://meditrack-smart-dispenser-default-rtdb.firebaseio.com";
 const String DEVICE_ID = "device001";
+const String DEVICE_NAME = "MediTrack Wokwi Device 01";
+const String DEVICE_TYPE = "wokwi-esp32";
 
 // =====================
 // Pin config
@@ -22,6 +25,14 @@ const int SERVO_PIN = 18;
 const int LED_PIN = 2;
 const int BUZZER_PIN = 23;
 const int PILL_SENSOR_PIN = 19;
+
+// =====================
+// Motor angle config
+// =====================
+const int HOME_ANGLE = 0;
+const int COMPARTMENT_1_ANGLE = 60;
+const int COMPARTMENT_2_ANGLE = 120;
+const int COMPARTMENT_3_ANGLE = 180;
 
 // =====================
 // Time config
@@ -33,8 +44,8 @@ const int DAYLIGHT_OFFSET_SECONDS = 0;
 // =====================
 // Runtime config
 // =====================
-const unsigned long SCHEDULE_CHECK_INTERVAL_MS = 5000;
-const unsigned long HEARTBEAT_INTERVAL_MS = 15000;
+const unsigned long SCHEDULE_CHECK_INTERVAL_MS = 3000;
+const unsigned long HEARTBEAT_INTERVAL_MS = 30000;
 
 unsigned long lastScheduleCheck = 0;
 unsigned long lastHeartbeat = 0;
@@ -62,6 +73,12 @@ String nowISO() {
   return String(buffer);
 }
 
+long nowEpoch() {
+  time_t now;
+  time(&now);
+  return (long)now;
+}
+
 String currentHHMM() {
   struct tm timeinfo;
 
@@ -86,11 +103,30 @@ String todayKey() {
   return String(buffer);
 }
 
+int currentWeekday() {
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+    return -1;
+  }
+
+  char buffer[2];
+  strftime(buffer, sizeof(buffer), "%w", &timeinfo);
+
+  return String(buffer).toInt();
+}
+
+String occurrenceKey(String scheduledTime) {
+  return todayKey() + "_" + scheduledTime;
+}
+
 int firebaseGET(String path, String& response) {
   HTTPClient http;
   String url = firebasePath(path);
 
   http.begin(url);
+  http.setTimeout(4000);
+
   int httpCode = http.GET();
 
   if (httpCode > 0) {
@@ -108,6 +144,7 @@ int firebasePATCH(String path, String jsonPayload) {
   String url = firebasePath(path);
 
   http.begin(url);
+  http.setTimeout(4000);
   http.addHeader("Content-Type", "application/json");
 
   int httpCode = http.sendRequest("PATCH", jsonPayload);
@@ -121,6 +158,7 @@ int firebasePOST(String path, String jsonPayload) {
   String url = firebasePath(path);
 
   http.begin(url);
+  http.setTimeout(4000);
   http.addHeader("Content-Type", "application/json");
 
   int httpCode = http.POST(jsonPayload);
@@ -129,11 +167,28 @@ int firebasePOST(String path, String jsonPayload) {
   return httpCode;
 }
 
+// =====================
+// Firebase device functions
+// =====================
+
+void initializeDeviceMetadata() {
+  String payload = "{";
+  payload += "\"deviceName\":\"" + DEVICE_NAME + "\",";
+  payload += "\"deviceType\":\"" + DEVICE_TYPE + "\"";
+  payload += "}";
+
+  int code = firebasePATCH("/devices/" + DEVICE_ID, payload);
+
+  Serial.print("[FIREBASE] Device metadata update HTTP=");
+  Serial.println(code);
+}
+
 void updateDeviceStatus(String state) {
   String payload = "{";
   payload += "\"online\":true,";
   payload += "\"currentState\":\"" + state + "\",";
-  payload += "\"lastSeen\":\"" + nowISO() + "\"";
+  payload += "\"lastSeen\":\"" + nowISO() + "\",";
+  payload += "\"lastSeenEpoch\":" + String(nowEpoch());
   payload += "}";
 
   int code = firebasePATCH("/devices/" + DEVICE_ID + "/status", payload);
@@ -143,6 +198,10 @@ void updateDeviceStatus(String state) {
   Serial.print(" HTTP=");
   Serial.println(code);
 }
+
+// =====================
+// Wi-Fi and time setup
+// =====================
 
 void connectWiFi() {
   Serial.print("[WIFI] Connecting to ");
@@ -177,6 +236,10 @@ void setupTime() {
   Serial.println(currentHHMM());
 }
 
+// =====================
+// Alert functions
+// =====================
+
 void startAlert() {
   digitalWrite(LED_PIN, HIGH);
   tone(BUZZER_PIN, 1000);
@@ -189,16 +252,32 @@ void stopAlert() {
   Serial.println("[ALERT] LED and buzzer OFF");
 }
 
-int compartmentToAngle(int compartment) {
-  if (compartment == 1) return 0;
-  if (compartment == 2) return 60;
-  if (compartment == 3) return 120;
-  if (compartment == 4) return 180;
+// =====================
+// Motor functions
+// =====================
 
-  return 0;
+int compartmentToAngle(int compartment) {
+  if (compartment == 1) return COMPARTMENT_1_ANGLE;
+  if (compartment == 2) return COMPARTMENT_2_ANGLE;
+  if (compartment == 3) return COMPARTMENT_3_ANGLE;
+
+  return HOME_ANGLE;
+}
+
+void returnToHome() {
+  Serial.println("[MOTOR] Returning to home position at 0 degrees");
+  compartmentServo.write(HOME_ANGLE);
+  delay(1000);
 }
 
 void openCompartment(int compartment) {
+  if (compartment < 1 || compartment > 3) {
+    Serial.print("[MOTOR] Invalid compartment: ");
+    Serial.println(compartment);
+    returnToHome();
+    return;
+  }
+
   int angle = compartmentToAngle(compartment);
 
   Serial.print("[MOTOR] Opening compartment ");
@@ -207,13 +286,18 @@ void openCompartment(int compartment) {
   Serial.println(angle);
 
   compartmentServo.write(angle);
-  delay(1500);
+  delay(1200);
 
   Serial.println("[MOTOR] Compartment position reached");
 }
 
+// =====================
+// Pill sensor functions
+// =====================
+
 bool isPillRemoved() {
-  // Button pressed = LOW because INPUT_PULLUP is used
+  // Button pressed = LOW because INPUT_PULLUP is used.
+  // Later, real IR sensor logic may need HIGH/LOW adjustment.
   return digitalRead(PILL_SENSOR_PIN) == LOW;
 }
 
@@ -238,13 +322,99 @@ bool waitForPillRemoval(int timeoutSeconds) {
   return false;
 }
 
-void writeDoseLog(String medicineName, String scheduledTime, String actualTime, String status, int compartment) {
+// =====================
+// Schedule matching helpers
+// =====================
+
+bool isSelectedWeekday(JsonObject weekdays, int day) {
+  if (day < 0) return false;
+
+  String key = String(day);
+  return weekdays[key] | false;
+}
+
+bool dateIsWithinRange(String today, String startDate, String endDate) {
+  if (startDate != "" && today < startDate) {
+    return false;
+  }
+
+  if (endDate != "" && today > endDate) {
+    return false;
+  }
+
+  return true;
+}
+
+bool scheduleMatchesNow(JsonObject schedule) {
+  String now = currentHHMM();
+  String today = todayKey();
+
+  String scheduledTime = schedule["time"] | "";
+
+  if (scheduledTime != now) {
+    return false;
+  }
+
+  JsonObject recurrence = schedule["recurrence"].as<JsonObject>();
+
+  if (recurrence.isNull()) {
+    Serial.println("[SCHEDULE] Missing recurrence data");
+    return false;
+  }
+
+  String type = recurrence["type"] | "";
+
+  if (type == "once") {
+    String runDate = recurrence["runDate"] | "";
+    return today == runDate;
+  }
+
+  if (type == "weekly") {
+    String startDate = recurrence["startDate"] | "";
+    int day = currentWeekday();
+
+    JsonObject weekdays = recurrence["weekdays"].as<JsonObject>();
+
+    return dateIsWithinRange(today, startDate, "") &&
+           isSelectedWeekday(weekdays, day);
+  }
+
+  if (type == "range") {
+    String startDate = recurrence["startDate"] | "";
+    String endDate = recurrence["endDate"] | "";
+    int day = currentWeekday();
+
+    JsonObject weekdays = recurrence["weekdays"].as<JsonObject>();
+
+    return dateIsWithinRange(today, startDate, endDate) &&
+           isSelectedWeekday(weekdays, day);
+  }
+
+  Serial.print("[SCHEDULE] Unknown recurrence type: ");
+  Serial.println(type);
+
+  return false;
+}
+
+// =====================
+// Dose logging and schedule updates
+// =====================
+
+void writeDoseLog(
+  String medicineName,
+  String scheduledTime,
+  String actualTime,
+  String status,
+  int compartment,
+  String occurrence
+) {
   String payload = "{";
   payload += "\"medicineName\":\"" + medicineName + "\",";
   payload += "\"scheduledTime\":\"" + scheduledTime + "\",";
   payload += "\"actualTime\":\"" + actualTime + "\",";
   payload += "\"status\":\"" + status + "\",";
   payload += "\"compartment\":" + String(compartment) + ",";
+  payload += "\"occurrence\":\"" + occurrence + "\",";
   payload += "\"createdAt\":\"" + nowISO() + "\"";
   payload += "}";
 
@@ -254,9 +424,10 @@ void writeDoseLog(String medicineName, String scheduledTime, String actualTime, 
   Serial.println(code);
 }
 
-void updateScheduleStatus(String scheduleId, String status) {
+void updateScheduleStatus(String scheduleId, String status, String occurrence) {
   String payload = "{";
   payload += "\"status\":\"" + status + "\",";
+  payload += "\"lastProcessedOccurrence\":\"" + occurrence + "\",";
   payload += "\"lastProcessedDate\":\"" + todayKey() + "\",";
   payload += "\"lastProcessedAt\":\"" + nowISO() + "\"";
   payload += "}";
@@ -271,7 +442,11 @@ void updateScheduleStatus(String scheduleId, String status) {
   Serial.println(code);
 }
 
-void processDose(String scheduleId, JsonObject schedule) {
+// =====================
+// Main dose process
+// =====================
+
+void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   isProcessingDose = true;
 
   String medicineName = schedule["medicineName"] | "Unknown";
@@ -283,23 +458,27 @@ void processDose(String scheduleId, JsonObject schedule) {
   Serial.println("=================================");
   Serial.print("[DOSE] Processing: ");
   Serial.println(medicineName);
+  Serial.print("[DOSE] Occurrence: ");
+  Serial.println(occurrence);
   Serial.println("=================================");
 
-  updateScheduleStatus(scheduleId, "due");
-
-  updateDeviceStatus("ALERTING");
-  startAlert();
+  updateScheduleStatus(scheduleId, "due", occurrence);
 
   updateDeviceStatus("DISPENSING");
   openCompartment(compartment);
+
+  updateDeviceStatus("ALERTING");
+  startAlert();
 
   updateDeviceStatus("WAITING_FOR_REMOVAL");
   bool removed = waitForPillRemoval(allowedDelaySeconds);
 
   String finalStatus = removed ? "taken" : "missed";
 
-  updateScheduleStatus(scheduleId, finalStatus);
-  writeDoseLog(medicineName, scheduledTime, currentHHMM(), finalStatus, compartment);
+  stopAlert();
+  
+  updateScheduleStatus(scheduleId, finalStatus, occurrence);
+  writeDoseLog(medicineName, scheduledTime, currentHHMM(), finalStatus, compartment, occurrence);
 
   if (finalStatus == "missed") {
     updateDeviceStatus("MISSED");
@@ -307,9 +486,10 @@ void processDose(String scheduleId, JsonObject schedule) {
     updateDeviceStatus("TAKEN");
   }
 
-  stopAlert();
+  returnToHome();
+  
 
-  delay(1000);
+  delay(500);
   updateDeviceStatus("IDLE");
 
   Serial.print("[DOSE] Completed with status: ");
@@ -318,6 +498,10 @@ void processDose(String scheduleId, JsonObject schedule) {
 
   isProcessingDose = false;
 }
+
+// =====================
+// Schedule checker
+// =====================
 
 void checkSchedules() {
   if (isProcessingDose) {
@@ -348,7 +532,6 @@ void checkSchedules() {
   }
 
   String now = currentHHMM();
-  String today = todayKey();
 
   Serial.print("[SCHEDULE] Checking schedules at ");
   Serial.println(now);
@@ -361,23 +544,25 @@ void checkSchedules() {
 
     bool enabled = schedule["enabled"] | false;
     String scheduledTime = schedule["time"] | "";
-    String lastProcessedDate = schedule["lastProcessedDate"] | "";
+    String lastProcessedOccurrence = schedule["lastProcessedOccurrence"] | "";
 
     if (!enabled) {
       continue;
     }
 
-    if (scheduledTime != now) {
+    if (!scheduleMatchesNow(schedule)) {
       continue;
     }
 
-    if (lastProcessedDate == today) {
-      Serial.print("[SCHEDULE] Already processed today: ");
-      Serial.println(scheduleId);
+    String occurrence = occurrenceKey(scheduledTime);
+
+    if (lastProcessedOccurrence == occurrence) {
+      Serial.print("[SCHEDULE] Already processed occurrence: ");
+      Serial.println(occurrence);
       continue;
     }
 
-    processDose(scheduleId, schedule);
+    processDose(scheduleId, schedule, occurrence);
     return;
   }
 }
@@ -397,14 +582,19 @@ void setup() {
   noTone(BUZZER_PIN);
 
   compartmentServo.attach(SERVO_PIN);
-  compartmentServo.write(0);
+  compartmentServo.write(HOME_ANGLE);
 
   connectWiFi();
   setupTime();
 
+  initializeDeviceMetadata();
   updateDeviceStatus("IDLE");
 
   Serial.println("[SYSTEM] MediTrack virtual ESP32 started");
+  Serial.println("[SYSTEM] Home angle: 0 degrees");
+  Serial.println("[SYSTEM] Compartment 1: 60 degrees");
+  Serial.println("[SYSTEM] Compartment 2: 120 degrees");
+  Serial.println("[SYSTEM] Compartment 3: 180 degrees");
 }
 
 void loop() {
