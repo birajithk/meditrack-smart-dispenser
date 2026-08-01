@@ -35,14 +35,12 @@ function DeviceStatus({ deviceId }) {
       <h2>Selected Device Status</h2>
 
       <p>
-        <strong>Device:</strong> {getDeviceTitle(device) || deviceId}
+        <strong>Device Name:</strong> {getDeviceTitle(device) || "Unnamed device"}
       </p>
 
-      {device?.description ? (
-        <p>
-          <strong>Description:</strong> {device.description}
-        </p>
-      ) : null}
+      <p>
+        <strong>Device ID:</strong> {deviceId}
+      </p>
 
       <p>
         <strong>Online:</strong> {online ? "Yes" : "No"}

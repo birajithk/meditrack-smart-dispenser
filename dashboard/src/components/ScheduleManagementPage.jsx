@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { onValue, push, ref, set, update } from "firebase/database";
 import { database } from "../firebase";
 import {
-  getCompartmentLabel,
   getCompartmentOptions,
+  getDeviceDropdownLabel,
   getDeviceTitle,
-  isCompletedSchedule,
+  isFinalOneTimeSchedule,
   normalizeDeviceRecord,
 } from "../utils/deviceData";
 import {
@@ -21,6 +21,8 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
   const today = formatLocalDate();
 
   const [devices, setDevices] = useState([]);
+  const [isPopupOpen, setIsPopupOpen] = useState(false);
+
   const [time, setTime] = useState("");
   const [compartment, setCompartment] = useState("");
   const [recurrenceType, setRecurrenceType] = useState("once");
@@ -28,7 +30,6 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(addDays(today, 4));
   const [selectedWeekdays, setSelectedWeekdays] = useState([]);
-  const [isFormOpen, setIsFormOpen] = useState(false);
 
   useEffect(() => {
     const devicesRef = ref(database, "devices");
@@ -38,7 +39,7 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
 
       const deviceList = Object.entries(data)
         .map(([deviceId, value]) => normalizeDeviceRecord(deviceId, value))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => getDeviceTitle(left).localeCompare(getDeviceTitle(right)));
 
       setDevices(deviceList);
 
@@ -56,25 +57,37 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
   );
 
   const schedules = useMemo(() => {
-    if (!selectedScheduleDevice) {
-      return [];
-    }
+    if (!selectedScheduleDevice) return [];
 
     return Object.entries(selectedScheduleDevice.schedules || {})
       .map(([id, value]) => ({ id, ...value }))
-      .sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
+      .sort((left, right) => {
+        if (left.time === right.time) {
+          return String(left.medicineName).localeCompare(String(right.medicineName));
+        }
+
+        return String(left.time).localeCompare(String(right.time));
+      });
   }, [selectedScheduleDevice]);
 
-  const activeSchedules = schedules.filter((schedule) => !isCompletedSchedule(schedule));
-  const completedSchedules = schedules.filter((schedule) => isCompletedSchedule(schedule));
-  const compartmentOptions = getCompartmentOptions(selectedScheduleDevice);
-  const selectedCompartment = compartmentOptions.some((option) => option.id === compartment)
-    ? compartment
-    : "";
+  const activeSchedules = schedules.filter(
+    (schedule) => !isFinalOneTimeSchedule(schedule)
+  );
+
+  const completedSchedules = schedules.filter((schedule) =>
+    isFinalOneTimeSchedule(schedule)
+  );
+
+  const compartmentOptions = useMemo(
+    () => getCompartmentOptions(selectedScheduleDevice),
+    [selectedScheduleDevice]
+  );
+
+  const selectedCompartment = compartment || compartmentOptions[0]?.id || "";
 
   const resetForm = () => {
     setTime("");
-    setCompartment(compartmentOptions[0]?.id || "");
+    setCompartment("");
     setRecurrenceType("once");
     setRunDate(today);
     setStartDate(today);
@@ -82,23 +95,24 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
     setSelectedWeekdays([]);
   };
 
-  const openAddSchedule = () => {
-    if (!selectedDeviceId) {
+  const openAddSchedulePopup = () => {
+    if (!selectedDeviceId || !selectedScheduleDevice) {
       alert("Please select a device first.");
       return;
     }
 
-    if (!compartmentOptions.length) {
-      alert("Add pill names to the device compartments before creating schedules.");
+    if (compartmentOptions.length === 0) {
+      alert("Please assign at least one pill to the selected device first.");
       return;
     }
 
     resetForm();
-    setIsFormOpen(true);
+    setCompartment(compartmentOptions[0].id);
+    setIsPopupOpen(true);
   };
 
-  const closeForm = () => {
-    setIsFormOpen(false);
+  const closePopup = () => {
+    setIsPopupOpen(false);
     resetForm();
   };
 
@@ -146,7 +160,7 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
   };
 
   const validateForm = () => {
-    if (!selectedDeviceId) {
+    if (!selectedDeviceId || !selectedScheduleDevice) {
       alert("Please select a device first.");
       return false;
     }
@@ -157,16 +171,19 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
     }
 
     if (!selectedCompartment) {
-      alert("Select a compartment that already has a pill name.");
+      alert("Please select a compartment pill.");
       return false;
     }
 
     if (recurrenceType === "once" && !runDate) {
-      alert("Please select the one-time date.");
+      alert("Please select the one-time run date.");
       return false;
     }
 
-    if ((recurrenceType === "weekly" || recurrenceType === "range") && !hasSelectedWeekday(selectedWeekdays)) {
+    if (
+      (recurrenceType === "weekly" || recurrenceType === "range") &&
+      !hasSelectedWeekday(selectedWeekdays)
+    ) {
       alert("Please select at least one day.");
       return false;
     }
@@ -184,15 +201,22 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
 
     if (!validateForm()) return;
 
-    const device = devices.find((entry) => entry.id === selectedDeviceId);
-    const selectedOption = compartmentOptions.find((option) => option.id === selectedCompartment);
+    const selectedOption = compartmentOptions.find(
+      (option) => option.id === selectedCompartment
+    );
+
+    if (!selectedOption) {
+      alert("Invalid compartment selected.");
+      return;
+    }
+
     const scheduleRef = push(ref(database, `devices/${selectedDeviceId}/schedules`));
 
     await set(scheduleRef, {
-      medicineName: selectedOption?.pillName || getCompartmentLabel(device, selectedCompartment),
+      medicineName: selectedOption.pillName,
       time,
-      compartment: Number(selectedCompartment),
-      allowedDelaySeconds: Number(device?.delaySeconds) || 30,
+      compartment: Number(selectedOption.compartmentNumber),
+      allowedDelaySeconds: Number(selectedScheduleDevice.delaySeconds) || 30,
       enabled: true,
       status: "pending",
       recurrence: buildRecurrence(),
@@ -201,7 +225,7 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
       updatedAt: new Date().toISOString(),
     });
 
-    closeForm();
+    closePopup();
   };
 
   const toggleEnabled = async (schedule) => {
@@ -211,6 +235,48 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
     });
   };
 
+  const renderScheduleTable = (title, rows, emptyMessage) => (
+    <div className="card">
+      <h2>{title}</h2>
+
+      {rows.length === 0 ? (
+        <p>{emptyMessage}</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Medicine</th>
+              <th>Time</th>
+              <th>Compartment</th>
+              <th>Recurrence</th>
+              <th>Status</th>
+              <th>Enabled</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {rows.map((schedule) => (
+              <tr key={schedule.id}>
+                <td data-label="Medicine">{schedule.medicineName}</td>
+                <td data-label="Time">{schedule.time}</td>
+                <td data-label="Compartment">{schedule.compartment}</td>
+                <td data-label="Recurrence">
+                  {recurrenceSummary(schedule.recurrence)}
+                </td>
+                <td data-label="Status">{schedule.status}</td>
+                <td data-label="Enabled">
+                  <button type="button" onClick={() => toggleEnabled(schedule)}>
+                    {schedule.enabled ? "Disable" : "Enable"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+
   return (
     <section className="page-card page-layout">
       <div className="card">
@@ -218,7 +284,8 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
           <div>
             <h2>Schedule Management</h2>
             <p>
-              Select a device, then add schedules using the pill names already assigned in Device Management.
+              Select a dispenser by device name, then create schedules for the
+              pills already assigned to that device.
             </p>
           </div>
 
@@ -233,24 +300,30 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
               <option value="">Select device</option>
               {devices.map((device) => (
                 <option key={device.id} value={device.id}>
-                  {getDeviceTitle(device)}
+                  {getDeviceDropdownLabel(device)}
                 </option>
               ))}
             </select>
 
-            <button type="button" onClick={openAddSchedule}>Add new schedule</button>
+            <button type="button" onClick={openAddSchedulePopup}>
+              Add new schedule
+            </button>
           </div>
         </div>
 
         {selectedScheduleDevice ? (
           <div className="device-summary">
-            <span className="badge badge--selection">{getDeviceTitle(selectedScheduleDevice)}</span>
-            {selectedScheduleDevice.description ? (
-              <span className="badge badge--muted">{selectedScheduleDevice.description}</span>
-            ) : null}
-            <span className="badge badge--muted">Delay: {selectedScheduleDevice.delaySeconds} seconds</span>
+            <span className="badge badge--selection">
+              {getDeviceTitle(selectedScheduleDevice)}
+            </span>
             <span className="badge badge--muted">
-              {getCompartmentOptions(selectedScheduleDevice).length} schedulable compartments
+              Device ID: {selectedScheduleDevice.id}
+            </span>
+            <span className="badge badge--muted">
+              Delay: {selectedScheduleDevice.delaySeconds} seconds
+            </span>
+            <span className="badge badge--muted">
+              {compartmentOptions.length} assigned pill compartments
             </span>
           </div>
         ) : (
@@ -258,99 +331,41 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
         )}
       </div>
 
-      <div className="card">
-        <h2>Active schedules</h2>
+      {renderScheduleTable(
+        "Active Schedules",
+        activeSchedules,
+        "No active schedules for this device."
+      )}
 
-        {activeSchedules.length === 0 ? (
-          <p>No active schedules for this device.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Medicine</th>
-                <th>Time</th>
-                <th>Compartment</th>
-                <th>Recurrence</th>
-                <th>Status</th>
-                <th>Enabled</th>
-              </tr>
-            </thead>
+      {renderScheduleTable(
+        "Completed One-Time Schedules",
+        completedSchedules,
+        "No completed one-time schedules yet."
+      )}
 
-            <tbody>
-              {activeSchedules.map((schedule) => (
-                <tr key={schedule.id}>
-                  <td data-label="Medicine">{schedule.medicineName}</td>
-                  <td data-label="Time">{schedule.time}</td>
-                  <td data-label="Compartment">{getCompartmentLabel(selectedScheduleDevice, schedule.compartment)}</td>
-                  <td data-label="Recurrence">{recurrenceSummary(schedule.recurrence)}</td>
-                  <td data-label="Status">{schedule.status}</td>
-                  <td data-label="Enabled">
-                    <button type="button" onClick={() => toggleEnabled(schedule)}>
-                      {schedule.enabled ? "Disable" : "Enable"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="card">
-        <h2>Completed schedules</h2>
-
-        {completedSchedules.length === 0 ? (
-          <p>No completed one-time schedules for this device.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Medicine</th>
-                <th>Time</th>
-                <th>Compartment</th>
-                <th>Recurrence</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {completedSchedules.map((schedule) => (
-                <tr key={schedule.id} className={String(schedule.status).toLowerCase() === "missed" ? "row-missed" : ""}>
-                  <td data-label="Medicine">{schedule.medicineName}</td>
-                  <td data-label="Time">{schedule.time}</td>
-                  <td data-label="Compartment">{getCompartmentLabel(selectedScheduleDevice, schedule.compartment)}</td>
-                  <td data-label="Recurrence">{recurrenceSummary(schedule.recurrence)}</td>
-                  <td data-label="Status">{schedule.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {isFormOpen && (
-        <div className="modal-backdrop" role="presentation" onClick={closeForm}>
-          <div className="modal-card card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-card__header">
+      {isPopupOpen && (
+        <div className="modal-backdrop">
+          <div className="modal-card card">
+            <div className="section-header">
               <div>
-                <h2>Add Schedule for {getDeviceTitle(selectedScheduleDevice)}</h2>
-                <p>The medicine name is taken from the selected compartment pill.</p>
+                <h2>Add new schedule</h2>
+                <p>
+                  Schedule is being added for{" "}
+                  <strong>{getDeviceTitle(selectedScheduleDevice)}</strong>.
+                </p>
               </div>
 
-              <button type="button" className="secondary-button" onClick={closeForm}>Close</button>
+              <button type="button" onClick={closePopup}>
+                Close
+              </button>
             </div>
 
             <form onSubmit={handleSubmit} className="management-form management-form--schedule">
-              <label>Time</label>
-              <input
-                type="time"
-                value={time}
-                onChange={(event) => setTime(event.target.value)}
-              />
-
               <label>Compartment pill</label>
-              <select value={selectedCompartment} onChange={(event) => setCompartment(event.target.value)}>
-                <option value="">Select allocated pill</option>
+              <select
+                value={selectedCompartment}
+                onChange={(event) => setCompartment(event.target.value)}
+              >
                 {compartmentOptions.map((option) => (
                   <option key={option.id} value={option.id}>
                     {option.pillName} - Compartment {option.compartmentNumber}
@@ -358,8 +373,18 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
                 ))}
               </select>
 
+              <label>Time</label>
+              <input
+                type="time"
+                value={time}
+                onChange={(event) => setTime(event.target.value)}
+              />
+
               <label>Schedule type</label>
-              <select value={recurrenceType} onChange={(event) => setRecurrenceType(event.target.value)}>
+              <select
+                value={recurrenceType}
+                onChange={(event) => setRecurrenceType(event.target.value)}
+              >
                 <option value="once">One-time dose</option>
                 <option value="weekly">Repeat weekly</option>
                 <option value="range">Repeat within date range</option>
@@ -385,7 +410,9 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
                       <button
                         type="button"
                         key={day.value}
-                        className={selectedWeekdays.includes(day.value) ? "selected-day" : ""}
+                        className={
+                          selectedWeekdays.includes(day.value) ? "selected-day" : ""
+                        }
                         onClick={() => toggleWeekday(day.value)}
                       >
                         {day.short}
@@ -394,8 +421,12 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
                   </div>
 
                   <div className="inline-buttons">
-                    <button type="button" onClick={selectEveryDay}>Every day</button>
-                    <button type="button" onClick={clearDays}>Clear days</button>
+                    <button type="button" onClick={selectEveryDay}>
+                      Every day
+                    </button>
+                    <button type="button" onClick={clearDays}>
+                      Clear days
+                    </button>
                   </div>
 
                   <label>Start date</label>
@@ -430,7 +461,7 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
                 </>
               )}
 
-              <button type="submit">Add schedule</button>
+              <button type="submit">Create schedule</button>
             </form>
           </div>
         </div>

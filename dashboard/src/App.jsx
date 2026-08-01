@@ -8,6 +8,7 @@ import DoseLogsPage from "./components/DoseLogsPage";
 function App() {
   const [activePage, setActivePage] = useState("home");
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [editDeviceRequestId, setEditDeviceRequestId] = useState("");
 
   const pageTitles = {
     home: "Device overview",
@@ -16,27 +17,19 @@ function App() {
     logs: "Dose logs",
   };
 
-  const openDevicesForDevice = (deviceId = selectedDeviceId) => {
-    if (deviceId) {
-      setSelectedDeviceId(deviceId);
-    }
-
+  const openDeviceEditor = (deviceId) => {
+    setSelectedDeviceId(deviceId);
+    setEditDeviceRequestId(deviceId);
     setActivePage("devices");
   };
 
-  const openSchedulesForDevice = (deviceId = selectedDeviceId) => {
-    if (deviceId) {
-      setSelectedDeviceId(deviceId);
-    }
-
+  const openDeviceSchedules = (deviceId) => {
+    setSelectedDeviceId(deviceId);
     setActivePage("schedules");
   };
 
-  const openLogsForDevice = (deviceId = selectedDeviceId) => {
-    if (deviceId) {
-      setSelectedDeviceId(deviceId);
-    }
-
+  const openDeviceLogs = (deviceId) => {
+    setSelectedDeviceId(deviceId);
     setActivePage("logs");
   };
 
@@ -55,7 +48,10 @@ function App() {
           </p>
         </div>
 
-        <div className="hero__badges hero__badges--stacked" aria-label="Dashboard navigation and selection">
+        <div
+          className="hero__badges hero__badges--stacked"
+          aria-label="Dashboard navigation and selection"
+        >
           <div className="page-tabs" role="tablist" aria-label="Dashboard pages">
             <button
               type="button"
@@ -64,6 +60,7 @@ function App() {
             >
               Home
             </button>
+
             <button
               type="button"
               className={activePage === "devices" ? "tab-button active" : "tab-button"}
@@ -71,6 +68,7 @@ function App() {
             >
               Devices
             </button>
+
             <button
               type="button"
               className={activePage === "schedules" ? "tab-button active" : "tab-button"}
@@ -78,6 +76,7 @@ function App() {
             >
               Schedules
             </button>
+
             <button
               type="button"
               className={activePage === "logs" ? "tab-button active" : "tab-button"}
@@ -87,7 +86,9 @@ function App() {
             </button>
           </div>
 
-          <span className="badge badge--selection">Selected device: {selectedDeviceId || "None"}</span>
+          <span className="badge badge--selection">
+            Selected device ID: {selectedDeviceId || "None"}
+          </span>
         </div>
       </header>
 
@@ -96,9 +97,9 @@ function App() {
           <HomePage
             selectedDeviceId={selectedDeviceId}
             onSelectDevice={setSelectedDeviceId}
-            onOpenDevices={openDevicesForDevice}
-            onOpenSchedules={openSchedulesForDevice}
-            onOpenLogs={openLogsForDevice}
+            onEditDevice={openDeviceEditor}
+            onManageSchedules={openDeviceSchedules}
+            onOpenLogs={openDeviceLogs}
           />
         )}
 
@@ -106,7 +107,8 @@ function App() {
           <DeviceManagementPage
             selectedDeviceId={selectedDeviceId}
             onSelectDevice={setSelectedDeviceId}
-            onOpenSchedules={openSchedulesForDevice}
+            editDeviceRequestId={editDeviceRequestId}
+            onEditRequestConsumed={() => setEditDeviceRequestId("")}
           />
         )}
 
@@ -118,7 +120,10 @@ function App() {
         )}
 
         {activePage === "logs" && (
-          <DoseLogsPage selectedDeviceId={selectedDeviceId} onSelectDevice={setSelectedDeviceId} />
+          <DoseLogsPage
+            selectedDeviceId={selectedDeviceId}
+            onSelectDevice={setSelectedDeviceId}
+          />
         )}
       </main>
     </div>

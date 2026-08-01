@@ -5,21 +5,29 @@
 #include <time.h>
 
 // =====================
-// Wi-Fi config for Wokwi
+// Wi-Fi config
+// Change this for each Wi-Fi network.
 // =====================
 const char* WIFI_SSID = "Wokwi-GUEST";
 const char* WIFI_PASSWORD = "";
 
 // =====================
+// Device config
+// This is the only device-specific project value.
+// Print this ID on the physical dispenser.
+// The caretaker enters the same ID in the dashboard.
+// =====================
+const String DEVICE_ID = "device001";
+
+// =====================
 // Firebase config
+// Common for all devices in this project.
 // =====================
 const String FIREBASE_URL = "https://meditrack-smart-dispenser-default-rtdb.firebaseio.com";
-const String DEVICE_ID = "device001";
-const String DEVICE_NAME = "MediTrack Wokwi Device 01";
-const String DEVICE_TYPE = "wokwi-esp32";
 
 // =====================
 // Pin config
+// Common for all devices if same PCB/wiring is used.
 // =====================
 const int SERVO_PIN = 18;
 const int LED_PIN = 2;
@@ -28,6 +36,7 @@ const int PILL_SENSOR_PIN = 19;
 
 // =====================
 // Motor angle config
+// 0 degrees is home/default. No pill compartment at 0.
 // =====================
 const int HOME_ANGLE = 0;
 const int COMPARTMENT_1_ANGLE = 60;
@@ -46,10 +55,17 @@ const int DAYLIGHT_OFFSET_SECONDS = 0;
 // =====================
 const unsigned long SCHEDULE_CHECK_INTERVAL_MS = 3000;
 const unsigned long HEARTBEAT_INTERVAL_MS = 30000;
+const unsigned long DEVICE_CONFIG_RETRY_INTERVAL_MS = 10000;
 
 unsigned long lastScheduleCheck = 0;
 unsigned long lastHeartbeat = 0;
+unsigned long lastDeviceConfigRetry = 0;
+
 bool isProcessingDose = false;
+bool isDeviceRegistered = false;
+
+String deviceName = "";
+int deviceDelaySeconds = 30;
 
 Servo compartmentServo;
 
@@ -120,6 +136,10 @@ String occurrenceKey(String scheduledTime) {
   return todayKey() + "_" + scheduledTime;
 }
 
+// =====================
+// Firebase HTTP functions
+// =====================
+
 int firebaseGET(String path, String& response) {
   HTTPClient http;
   String url = firebasePath(path);
@@ -168,20 +188,69 @@ int firebasePOST(String path, String jsonPayload) {
 }
 
 // =====================
-// Firebase device functions
+// Device config from Firebase
 // =====================
 
-void initializeDeviceMetadata() {
-  String payload = "{";
-  payload += "\"deviceName\":\"" + DEVICE_NAME + "\",";
-  payload += "\"deviceType\":\"" + DEVICE_TYPE + "\"";
-  payload += "}";
+bool loadDeviceConfig() {
+  String response;
+  int code = firebaseGET("/devices/" + DEVICE_ID, response);
 
-  int code = firebasePATCH("/devices/" + DEVICE_ID, payload);
+  if (code != 200) {
+    Serial.print("[DEVICE] Failed to read device config. HTTP=");
+    Serial.println(code);
+    return false;
+  }
 
-  Serial.print("[FIREBASE] Device metadata update HTTP=");
-  Serial.println(code);
+  if (response == "null") {
+    Serial.println("[DEVICE] Device ID is not registered in Firebase yet.");
+    Serial.print("[DEVICE] Register this device ID from dashboard: ");
+    Serial.println(DEVICE_ID);
+    return false;
+  }
+
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, response);
+
+  if (error) {
+    Serial.print("[DEVICE] Failed to parse device config: ");
+    Serial.println(error.c_str());
+    return false;
+  }
+
+  deviceName = doc["deviceName"] | DEVICE_ID;
+  deviceDelaySeconds = doc["delaySeconds"] | 30;
+
+  Serial.println();
+  Serial.println("=================================");
+  Serial.println("[DEVICE] Device config loaded");
+  Serial.print("[DEVICE] Device ID: ");
+  Serial.println(DEVICE_ID);
+  Serial.print("[DEVICE] Device name: ");
+  Serial.println(deviceName);
+  Serial.print("[DEVICE] Default delay seconds: ");
+  Serial.println(deviceDelaySeconds);
+
+  JsonObject compartments = doc["compartments"].as<JsonObject>();
+
+  for (int compartment = 1; compartment <= 3; compartment++) {
+    String key = String(compartment);
+    String pillName = compartments[key]["pillName"] | "";
+
+    Serial.print("[DEVICE] Compartment ");
+    Serial.print(compartment);
+    Serial.print(": ");
+    Serial.println(pillName == "" ? "Empty" : pillName);
+  }
+
+  Serial.println("=================================");
+  Serial.println();
+
+  return true;
 }
+
+// =====================
+// Firebase device status
+// =====================
 
 void updateDeviceStatus(String state) {
   String payload = "{";
@@ -296,8 +365,8 @@ void openCompartment(int compartment) {
 // =====================
 
 bool isPillRemoved() {
-  // Button pressed = LOW because INPUT_PULLUP is used.
-  // Later, real IR sensor logic may need HIGH/LOW adjustment.
+  // Wokwi pushbutton pressed = LOW because INPUT_PULLUP is used.
+  // In real hardware, IR sensor HIGH/LOW may need to be inverted after testing.
   return digitalRead(PILL_SENSOR_PIN) == LOW;
 }
 
@@ -323,7 +392,7 @@ bool waitForPillRemoval(int timeoutSeconds) {
 }
 
 // =====================
-// Schedule matching helpers
+// Schedule matching
 // =====================
 
 bool isSelectedWeekday(JsonObject weekdays, int day) {
@@ -452,10 +521,12 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   String medicineName = schedule["medicineName"] | "Unknown";
   String scheduledTime = schedule["time"] | "";
   int compartment = schedule["compartment"] | 1;
-  int allowedDelaySeconds = schedule["allowedDelaySeconds"] | 30;
+  int allowedDelaySeconds = schedule["allowedDelaySeconds"] | deviceDelaySeconds;
 
   Serial.println();
   Serial.println("=================================");
+  Serial.print("[DOSE] Device: ");
+  Serial.println(deviceName);
   Serial.print("[DOSE] Processing: ");
   Serial.println(medicineName);
   Serial.print("[DOSE] Occurrence: ");
@@ -464,19 +535,17 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
 
   updateScheduleStatus(scheduleId, "due", occurrence);
 
-  updateDeviceStatus("DISPENSING");
-  openCompartment(compartment);
-
   updateDeviceStatus("ALERTING");
   startAlert();
+
+  updateDeviceStatus("DISPENSING");
+  openCompartment(compartment);
 
   updateDeviceStatus("WAITING_FOR_REMOVAL");
   bool removed = waitForPillRemoval(allowedDelaySeconds);
 
   String finalStatus = removed ? "taken" : "missed";
 
-  stopAlert();
-  
   updateScheduleStatus(scheduleId, finalStatus, occurrence);
   writeDoseLog(medicineName, scheduledTime, currentHHMM(), finalStatus, compartment, occurrence);
 
@@ -487,7 +556,7 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   }
 
   returnToHome();
-  
+  stopAlert();
 
   delay(500);
   updateDeviceStatus("IDLE");
@@ -504,7 +573,7 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
 // =====================
 
 void checkSchedules() {
-  if (isProcessingDose) {
+  if (isProcessingDose || !isDeviceRegistered) {
     return;
   }
 
@@ -587,8 +656,11 @@ void setup() {
   connectWiFi();
   setupTime();
 
-  initializeDeviceMetadata();
-  updateDeviceStatus("IDLE");
+  isDeviceRegistered = loadDeviceConfig();
+
+  if (isDeviceRegistered) {
+    updateDeviceStatus("IDLE");
+  }
 
   Serial.println("[SYSTEM] MediTrack virtual ESP32 started");
   Serial.println("[SYSTEM] Home angle: 0 degrees");
@@ -603,6 +675,21 @@ void loop() {
   }
 
   unsigned long now = millis();
+
+  if (!isDeviceRegistered) {
+    if (now - lastDeviceConfigRetry >= DEVICE_CONFIG_RETRY_INTERVAL_MS) {
+      Serial.println("[DEVICE] Retrying device registration lookup...");
+      isDeviceRegistered = loadDeviceConfig();
+
+      if (isDeviceRegistered) {
+        updateDeviceStatus("IDLE");
+      }
+
+      lastDeviceConfigRetry = now;
+    }
+
+    return;
+  }
 
   if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
     updateDeviceStatus("IDLE");

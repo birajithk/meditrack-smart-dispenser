@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { onValue, ref } from "firebase/database";
 import { database } from "../firebase";
-import { getDeviceTitle, isMissedLog, normalizeDeviceRecord } from "../utils/deviceData";
+import {
+  getDeviceDropdownLabel,
+  getDeviceTitle,
+  isMissedLog,
+  normalizeDeviceRecord,
+} from "../utils/deviceData";
 
 function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
   const [devices, setDevices] = useState([]);
@@ -14,7 +19,7 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
 
       const deviceList = Object.entries(data)
         .map(([id, value]) => normalizeDeviceRecord(id, value))
-        .sort((left, right) => left.deviceName.localeCompare(right.deviceName));
+        .sort((left, right) => getDeviceTitle(left).localeCompare(getDeviceTitle(right)));
 
       setDevices(deviceList);
 
@@ -32,13 +37,13 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
   );
 
   const logs = useMemo(() => {
-    if (!selectedDevice?.logs) {
-      return [];
-    }
+    if (!selectedDevice?.logs) return [];
 
     return Object.entries(selectedDevice.logs)
       .map(([id, value]) => ({ id, ...value }))
-      .reverse();
+      .sort((left, right) =>
+        String(right.createdAt || "").localeCompare(String(left.createdAt || ""))
+      );
   }, [selectedDevice]);
 
   return (
@@ -47,21 +52,21 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
         <div className="section-header">
           <div>
             <h2>Dose Logs</h2>
-            <p>Switch between devices to inspect their dose history. Missed doses are highlighted.</p>
+            <p>
+              Select a dispenser by device name to inspect dose history. Missed
+              doses are highlighted.
+            </p>
           </div>
 
           <div className="section-actions">
             <select
               value={selectedDeviceId}
-              onChange={(event) => {
-                const nextDeviceId = event.target.value;
-                onSelectDevice(nextDeviceId);
-              }}
+              onChange={(event) => onSelectDevice(event.target.value)}
             >
               <option value="">Select device</option>
               {devices.map((device) => (
                 <option key={device.id} value={device.id}>
-                  {getDeviceTitle(device)}
+                  {getDeviceDropdownLabel(device)}
                 </option>
               ))}
             </select>
@@ -70,8 +75,12 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
 
         {selectedDevice ? (
           <div className="device-summary">
-            <span className="badge badge--selection">{getDeviceTitle(selectedDevice)}</span>
-            <span className="badge badge--muted">{selectedDevice.id}</span>
+            <span className="badge badge--selection">
+              {getDeviceTitle(selectedDevice)}
+            </span>
+            <span className="badge badge--muted">
+              Device ID: {selectedDevice.id}
+            </span>
           </div>
         ) : (
           <p>Select a device to view logs.</p>

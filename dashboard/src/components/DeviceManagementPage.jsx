@@ -5,7 +5,6 @@ import {
   DEFAULT_COMPARTMENT_COUNT,
   getCompartmentLabel,
   getDeviceTitle,
-  getNextDeviceId,
   isDeviceOnline,
   normalizeDeviceRecord,
 } from "../utils/deviceData";
@@ -13,32 +12,37 @@ import {
 function createEmptyCompartmentState() {
   const state = {};
 
-  for (let compartmentNumber = 1; compartmentNumber <= DEFAULT_COMPARTMENT_COUNT; compartmentNumber += 1) {
+  for (
+    let compartmentNumber = 1;
+    compartmentNumber <= DEFAULT_COMPARTMENT_COUNT;
+    compartmentNumber += 1
+  ) {
     state[String(compartmentNumber)] = "";
   }
 
   return state;
 }
 
-function createBlankFormState(nextDeviceId = "device001") {
+function createBlankFormState() {
   return {
-    deviceId: nextDeviceId,
-    description: "",
+    deviceId: "",
+    deviceName: "",
     delaySeconds: 30,
     compartments: createEmptyCompartmentState(),
   };
 }
 
-function isValidDeviceId(deviceId) {
-  return /^[A-Za-z0-9_-]+$/.test(deviceId);
-}
-
-function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedules }) {
+function DeviceManagementPage({
+  selectedDeviceId,
+  onSelectDevice,
+  editDeviceRequestId,
+  onEditRequestConsumed,
+}) {
   const [devices, setDevices] = useState([]);
+  const [isPopupOpen, setIsPopupOpen] = useState(false);
   const [mode, setMode] = useState("create");
   const [editingDeviceId, setEditingDeviceId] = useState("");
   const [formState, setFormState] = useState(createBlankFormState());
-  const [isFormOpen, setIsFormOpen] = useState(false);
 
   useEffect(() => {
     const devicesRef = ref(database, "devices");
@@ -48,7 +52,7 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
 
       const deviceList = Object.entries(data)
         .map(([deviceId, value]) => normalizeDeviceRecord(deviceId, value))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => getDeviceTitle(left).localeCompare(getDeviceTitle(right)));
 
       setDevices(deviceList);
     });
@@ -56,98 +60,128 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
     return () => unsubscribe();
   }, []);
 
-  const closeForm = () => {
-    setIsFormOpen(false);
+  useEffect(() => {
+    if (!editDeviceRequestId || devices.length === 0) return;
+
+    const requestedDevice = devices.find((device) => device.id === editDeviceRequestId);
+
+    if (requestedDevice) {
+      openEditPopup(requestedDevice);
+      onEditRequestConsumed();
+    }
+  }, [editDeviceRequestId, devices, onEditRequestConsumed]);
+
+  const resetForm = () => {
+    setFormState(createBlankFormState());
     setMode("create");
     setEditingDeviceId("");
   };
 
-  const loadDeviceIntoForm = (device) => {
+  const openCreatePopup = () => {
+    resetForm();
+    setIsPopupOpen(true);
+  };
+
+  const closePopup = () => {
+    setIsPopupOpen(false);
+    resetForm();
+  };
+
+  const openEditPopup = (device) => {
     const nextCompartments = createEmptyCompartmentState();
 
-    for (let compartmentNumber = 1; compartmentNumber <= DEFAULT_COMPARTMENT_COUNT; compartmentNumber += 1) {
-      nextCompartments[String(compartmentNumber)] = device.compartments?.[String(compartmentNumber)]?.pillName || "";
+    for (
+      let compartmentNumber = 1;
+      compartmentNumber <= DEFAULT_COMPARTMENT_COUNT;
+      compartmentNumber += 1
+    ) {
+      nextCompartments[String(compartmentNumber)] =
+        device.compartments?.[String(compartmentNumber)]?.pillName || "";
     }
 
     setMode("edit");
     setEditingDeviceId(device.id);
     setFormState({
       deviceId: device.id,
-      description: device.description || "",
+      deviceName: device.deviceName || "",
       delaySeconds: device.delaySeconds || 30,
       compartments: nextCompartments,
     });
-    setIsFormOpen(true);
+    setIsPopupOpen(true);
   };
 
-  const startNewDevice = () => {
-    setMode("create");
-    setEditingDeviceId("");
-    setFormState(createBlankFormState(getNextDeviceId(devices)));
-    setIsFormOpen(true);
+  const validateDeviceId = (deviceId) => {
+    return /^[A-Za-z0-9_-]+$/.test(deviceId);
   };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
 
     const cleanedDeviceId = formState.deviceId.trim();
+    const cleanedDeviceName = formState.deviceName.trim();
 
     if (!cleanedDeviceId) {
       alert("Device ID is required.");
       return;
     }
 
-    if (!isValidDeviceId(cleanedDeviceId)) {
-      alert("Use only letters, numbers, hyphen, or underscore in the device ID.");
+    if (!validateDeviceId(cleanedDeviceId)) {
+      alert("Device ID can only contain letters, numbers, underscore, and hyphen.");
       return;
     }
 
-    if (mode === "create") {
-      const snapshot = await get(ref(database, `devices/${cleanedDeviceId}`));
-
-      if (snapshot.exists()) {
-        alert("This device ID already exists. Use another ID such as device002.");
-        return;
-      }
+    if (!cleanedDeviceName) {
+      alert("Device name is required.");
+      return;
     }
 
     const cleanedCompartments = {};
 
-    for (let compartmentNumber = 1; compartmentNumber <= DEFAULT_COMPARTMENT_COUNT; compartmentNumber += 1) {
+    for (
+      let compartmentNumber = 1;
+      compartmentNumber <= DEFAULT_COMPARTMENT_COUNT;
+      compartmentNumber += 1
+    ) {
       cleanedCompartments[String(compartmentNumber)] = {
         pillName: formState.compartments[String(compartmentNumber)]?.trim() || "",
       };
     }
 
-    const previousDevice = devices.find((device) => device.id === editingDeviceId);
-
     const payload = {
-      description: formState.description.trim(),
+      deviceName: cleanedDeviceName,
       delaySeconds: Number(formState.delaySeconds) || 30,
       compartments: cleanedCompartments,
-      status: previousDevice?.status || {
-        online: false,
-        currentState: "NOT_CONNECTED",
-        lastSeen: "Not connected yet",
-        lastSeenEpoch: 0,
-      },
       updatedAt: new Date().toISOString(),
     };
 
     if (mode === "edit" && editingDeviceId) {
       await update(ref(database, `devices/${editingDeviceId}`), payload);
       onSelectDevice(editingDeviceId);
-      closeForm();
+      closePopup();
       return;
     }
 
-    await set(ref(database, `devices/${cleanedDeviceId}`), {
+    const deviceRef = ref(database, `devices/${cleanedDeviceId}`);
+    const existingSnapshot = await get(deviceRef);
+
+    if (existingSnapshot.exists()) {
+      alert("A device with this ID already exists.");
+      return;
+    }
+
+    await set(deviceRef, {
       ...payload,
+      status: {
+        online: false,
+        currentState: "NOT_CONNECTED",
+        lastSeen: "Not available",
+        lastSeenEpoch: 0,
+      },
       createdAt: new Date().toISOString(),
     });
 
     onSelectDevice(cleanedDeviceId);
-    closeForm();
+    closePopup();
   };
 
   return (
@@ -157,15 +191,18 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
           <div>
             <h2>Registered Devices</h2>
             <p>
-              Manage dispenser IDs, descriptions, default delay time, and the pill allocated to each of the three compartments.
+              Add the printed device ID from the physical dispenser, then give
+              it a friendly name and assign pills to compartments.
             </p>
           </div>
 
-          <button type="button" onClick={startNewDevice}>Add new device</button>
+          <button type="button" onClick={openCreatePopup}>
+            Add new device
+          </button>
         </div>
 
         {devices.length === 0 ? (
-          <p>No devices registered yet. Press Add new device to create one.</p>
+          <p>No devices registered yet.</p>
         ) : (
           <div className="device-grid">
             {devices.map((device) => {
@@ -173,45 +210,48 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
               const isSelected = selectedDeviceId === device.id;
 
               return (
-                <div key={device.id} className={`device-card device-card--list ${isSelected ? "selected" : ""}`}>
+                <div
+                  key={device.id}
+                  className={`device-card device-card--list ${isSelected ? "selected" : ""}`}
+                >
                   <div className="device-card__header">
                     <strong>{getDeviceTitle(device)}</strong>
-                    <span className={`status-chip ${online ? "status-chip--online" : "status-chip--offline"}`}>
+
+                    <span
+                      className={`status-chip ${
+                        online ? "status-chip--online" : "status-chip--offline"
+                      }`}
+                    >
                       {online ? "Online" : "Offline"}
                     </span>
                   </div>
 
-                  {device.description ? <span>{device.description}</span> : <span>No description added</span>}
+                  <span>Device ID: {device.id}</span>
                   <span>Delay: {device.delaySeconds} seconds</span>
                   <span>State: {device.status.currentState || "UNKNOWN"}</span>
                   <span>Last seen: {device.status.lastSeen || "Not available"}</span>
 
                   <div className="device-card__meta">
-                    {Object.entries(device.compartments).map(([compartmentId, compartment]) => (
-                      <span key={compartmentId} className="badge badge--muted">
-                        {compartment.pillName ? `${compartmentId}: ${compartment.pillName}` : `Compartment ${compartmentId} empty`}
-                      </span>
-                    ))}
+                    {Object.entries(device.compartments).map(
+                      ([compartmentId, compartment]) => (
+                        <span key={compartmentId} className="badge badge--muted">
+                          {compartment.pillName
+                            ? `${compartmentId}: ${compartment.pillName}`
+                            : `Compartment ${compartmentId} empty`}
+                        </span>
+                      )
+                    )}
                   </div>
 
-                  <div className="device-card__actions">
+                  <div className="device-card__footer">
                     <button
                       type="button"
                       onClick={() => {
                         onSelectDevice(device.id);
-                        loadDeviceIntoForm(device);
+                        openEditPopup(device);
                       }}
                     >
                       Edit device
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectDevice(device.id);
-                        onOpenSchedules(device.id);
-                      }}
-                    >
-                      Manage schedules
                     </button>
                   </div>
                 </div>
@@ -221,18 +261,21 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
         )}
       </div>
 
-      {isFormOpen && (
-        <div className="modal-backdrop" role="presentation" onClick={closeForm}>
-          <div className="modal-card card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-card__header">
+      {isPopupOpen && (
+        <div className="modal-backdrop">
+          <div className="modal-card card">
+            <div className="section-header">
               <div>
-                <h2>{mode === "edit" ? `Edit ${editingDeviceId}` : "Add New Device"}</h2>
+                <h2>{mode === "edit" ? "Edit device" : "Add new device"}</h2>
                 <p>
-                  The device ID is also the Firebase device key. Program the ESP32 with the same ID so it writes to this device record.
+                  The Device ID must match the ID programmed into the ESP32
+                  sketch and printed on the dispenser.
                 </p>
               </div>
 
-              <button type="button" className="secondary-button" onClick={closeForm}>Close</button>
+              <button type="button" onClick={closePopup}>
+                Close
+              </button>
             </div>
 
             <form onSubmit={handleSubmit} className="management-form">
@@ -241,16 +284,26 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
                 type="text"
                 value={formState.deviceId}
                 disabled={mode === "edit"}
-                onChange={(event) => setFormState((current) => ({ ...current, deviceId: event.target.value }))}
-                placeholder="Example: device002"
+                onChange={(event) =>
+                  setFormState((current) => ({
+                    ...current,
+                    deviceId: event.target.value,
+                  }))
+                }
+                placeholder="Example: device001"
               />
 
-              <label>Device description</label>
+              <label>Device name</label>
               <input
                 type="text"
-                value={formState.description}
-                onChange={(event) => setFormState((current) => ({ ...current, description: event.target.value }))}
-                placeholder="Example: Boarding room dispenser"
+                value={formState.deviceName}
+                onChange={(event) =>
+                  setFormState((current) => ({
+                    ...current,
+                    deviceName: event.target.value,
+                  }))
+                }
+                placeholder="Example: Amma's medicine dispenser"
               />
 
               <label>Delay seconds for this device</label>
@@ -258,24 +311,48 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
                 type="number"
                 min="1"
                 value={formState.delaySeconds}
-                onChange={(event) => setFormState((current) => ({ ...current, delaySeconds: event.target.value }))}
+                onChange={(event) =>
+                  setFormState((current) => ({
+                    ...current,
+                    delaySeconds: event.target.value,
+                  }))
+                }
               />
 
               <div className="compartment-editor">
                 <div className="compartment-editor__header">
                   <h3>Compartment pills</h3>
-                  <p>Schedule creation will use these pill names. Empty compartments will not be schedulable.</p>
+                  <p>
+                    Only compartments with a pill name will appear in schedule
+                    creation.
+                  </p>
                 </div>
 
                 <div className="compartment-grid">
-                  {Array.from({ length: DEFAULT_COMPARTMENT_COUNT }, (_, index) => index + 1).map((compartmentNumber) => (
+                  {Array.from(
+                    { length: DEFAULT_COMPARTMENT_COUNT },
+                    (_, index) => index + 1
+                  ).map((compartmentNumber) => (
                     <label key={compartmentNumber} className="compartment-field">
-                      <span>{getCompartmentLabel({ compartments: formState.compartments }, compartmentNumber)}</span>
+                      <span>
+                        {getCompartmentLabel(
+                          {
+                            compartments: Object.fromEntries(
+                              Object.entries(formState.compartments).map(
+                                ([id, pillName]) => [id, { pillName }]
+                              )
+                            ),
+                          },
+                          compartmentNumber
+                        )}
+                      </span>
+
                       <input
                         type="text"
                         value={formState.compartments[String(compartmentNumber)] || ""}
                         onChange={(event) => {
                           const value = event.target.value;
+
                           setFormState((current) => ({
                             ...current,
                             compartments: {
@@ -291,17 +368,9 @@ function DeviceManagementPage({ selectedDeviceId, onSelectDevice, onOpenSchedule
                 </div>
               </div>
 
-              {mode === "create" && (
-                <div className="help-box">
-                  <strong>ESP32 connection step</strong>
-                  <p>
-                    After creating this device, set the same ID in the ESP32 firmware:
-                  </p>
-                  <code>{`const String DEVICE_ID = "${formState.deviceId.trim() || "device002"}";`}</code>
-                </div>
-              )}
-
-              <button type="submit">{mode === "edit" ? "Update device" : "Create device"}</button>
+              <button type="submit">
+                {mode === "edit" ? "Update device" : "Create device"}
+              </button>
             </form>
           </div>
         </div>

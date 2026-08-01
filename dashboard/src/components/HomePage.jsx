@@ -8,7 +8,13 @@ import {
   normalizeDeviceRecord,
 } from "../utils/deviceData";
 
-function HomePage({ selectedDeviceId, onSelectDevice, onOpenDevices, onOpenSchedules, onOpenLogs }) {
+function HomePage({
+  selectedDeviceId,
+  onSelectDevice,
+  onEditDevice,
+  onManageSchedules,
+  onOpenLogs,
+}) {
   const [devices, setDevices] = useState([]);
 
   useEffect(() => {
@@ -19,7 +25,7 @@ function HomePage({ selectedDeviceId, onSelectDevice, onOpenDevices, onOpenSched
 
       const deviceList = Object.entries(data)
         .map(([deviceId, value]) => normalizeDeviceRecord(deviceId, value))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => getDeviceTitle(left).localeCompare(getDeviceTitle(right)));
 
       setDevices(deviceList);
 
@@ -37,8 +43,8 @@ function HomePage({ selectedDeviceId, onSelectDevice, onOpenDevices, onOpenSched
         <div>
           <h2>Current Device Statuses</h2>
           <p>
-            Select a dispenser to edit its compartments, manage its schedules, or review its dose logs.
-            Offline devices and missed doses are highlighted.
+            Each dispenser is identified by its printed device ID. The friendly
+            device name is entered from the dashboard.
           </p>
         </div>
       </div>
@@ -56,35 +62,55 @@ function HomePage({ selectedDeviceId, onSelectDevice, onOpenDevices, onOpenSched
               <div
                 key={device.id}
                 className={`device-card device-card--home ${isSelected ? "selected" : ""}`}
-                onClick={() => onSelectDevice(device.id)}
               >
                 <div className="device-card__header">
                   <strong>{getDeviceTitle(device)}</strong>
-                  <span className={`status-chip ${online ? "status-chip--online" : "status-chip--offline"}`}>
+
+                  <span
+                    className={`status-chip ${
+                      online ? "status-chip--online" : "status-chip--offline"
+                    }`}
+                  >
                     {online ? "Online" : "Offline"}
                   </span>
                 </div>
 
-                {device.description ? <span>{device.description}</span> : <span>No description added</span>}
+                <span>Device ID: {device.id}</span>
 
                 <div className="device-card__meta">
                   <span>State: {device.status.currentState || "UNKNOWN"}</span>
                   <span>Last seen: {device.status.lastSeen || "Not available"}</span>
+                  <span>Missed doses: {missedDoseCount}</span>
                 </div>
 
                 <div className="device-card__footer">
-                  <span className="badge badge--selection">Missed doses: {missedDoseCount}</span>
-                  <span className="badge badge--muted">Delay: {device.delaySeconds} seconds</span>
-                </div>
-
-                <div className="device-card__actions" onClick={(event) => event.stopPropagation()}>
-                  <button type="button" onClick={() => onOpenDevices(device.id)}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectDevice(device.id);
+                      onEditDevice(device.id);
+                    }}
+                  >
                     Edit device
                   </button>
-                  <button type="button" onClick={() => onOpenSchedules(device.id)}>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectDevice(device.id);
+                      onManageSchedules(device.id);
+                    }}
+                  >
                     Manage schedules
                   </button>
-                  <button type="button" className="secondary-button" onClick={() => onOpenLogs(device.id)}>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectDevice(device.id);
+                      onOpenLogs(device.id);
+                    }}
+                  >
                     View logs
                   </button>
                 </div>

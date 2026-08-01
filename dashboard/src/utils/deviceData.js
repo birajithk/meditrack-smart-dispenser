@@ -18,7 +18,11 @@ export function isDeviceOnline(status, staleSeconds = 60) {
 export function normalizeDeviceRecord(deviceId, value = {}) {
   const compartments = {};
 
-  for (let compartmentNumber = 1; compartmentNumber <= DEFAULT_COMPARTMENT_COUNT; compartmentNumber += 1) {
+  for (
+    let compartmentNumber = 1;
+    compartmentNumber <= DEFAULT_COMPARTMENT_COUNT;
+    compartmentNumber += 1
+  ) {
     const compartmentValue = value.compartments?.[String(compartmentNumber)] || {};
 
     compartments[String(compartmentNumber)] = {
@@ -28,8 +32,7 @@ export function normalizeDeviceRecord(deviceId, value = {}) {
 
   return {
     id: deviceId,
-    deviceName: deviceId,
-    description: value.description || "",
+    deviceName: value.deviceName || "",
     delaySeconds: Number(value.delaySeconds) || 30,
     compartments,
     status: value.status || {},
@@ -39,21 +42,23 @@ export function normalizeDeviceRecord(deviceId, value = {}) {
 }
 
 export function getDeviceTitle(device) {
-  if (!device) {
-    return "";
-  }
+  if (!device) return "";
 
-  if (typeof device === "string") {
-    return device;
-  }
+  if (typeof device === "string") return device;
 
-  return device.id || "";
+  return device.deviceName?.trim() || device.id || "";
+}
+
+export function getDeviceDropdownLabel(device) {
+  if (!device) return "";
+
+  const title = getDeviceTitle(device);
+
+  return `${title} (${device.id})`;
 }
 
 export function getCompartmentOptions(device) {
-  if (!device?.compartments) {
-    return [];
-  }
+  if (!device?.compartments) return [];
 
   return Object.entries(device.compartments)
     .map(([compartmentId, compartment]) => ({
@@ -68,23 +73,18 @@ export function getCompartmentLabel(device, compartmentNumber) {
   const compartment = device?.compartments?.[String(compartmentNumber)];
 
   if (compartment?.pillName?.trim()) {
-    return `${compartmentNumber}: ${compartment.pillName.trim()}`;
+    return `Compartment ${compartmentNumber}: ${compartment.pillName.trim()}`;
   }
 
   return `Compartment ${compartmentNumber}`;
 }
 
 export function isCompletedSchedule(schedule) {
-  const status = String(schedule?.status || "").toLowerCase();
-  const recurrenceType = String(schedule?.recurrence?.type || "").toLowerCase();
+  return COMPLETED_STATUSES.has(String(schedule?.status || "").toLowerCase());
+}
 
-  // A recurring schedule should stay active after today's dose is taken/missed,
-  // because it can still run on future occurrences.
-  if (recurrenceType === "weekly" || recurrenceType === "range") {
-    return false;
-  }
-
-  return COMPLETED_STATUSES.has(status);
+export function isFinalOneTimeSchedule(schedule) {
+  return schedule?.recurrence?.type === "once" && isCompletedSchedule(schedule);
 }
 
 export function isMissedLog(log) {
@@ -93,15 +93,4 @@ export function isMissedLog(log) {
 
 export function getMissedDoseCount(logs = {}) {
   return Object.values(logs).filter((log) => isMissedLog(log)).length;
-}
-
-export function getNextDeviceId(devices = []) {
-  const usedNumbers = devices
-    .map((device) => String(device.id || "").match(/^device(\d+)$/i))
-    .filter(Boolean)
-    .map((match) => Number(match[1]));
-
-  const nextNumber = usedNumbers.length ? Math.max(...usedNumbers) + 1 : 1;
-
-  return `device${String(nextNumber).padStart(3, "0")}`;
 }

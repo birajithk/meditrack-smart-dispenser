@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { onValue, ref } from "firebase/database";
 import { database } from "../firebase";
-import { getDeviceTitle, isDeviceOnline, normalizeDeviceRecord } from "../utils/deviceData";
+import { getDeviceSubtitle, getDeviceTitle, isDeviceOnline, normalizeDeviceRecord } from "../utils/deviceData";
 
 function DeviceList({ selectedDeviceId, onSelectDevice }) {
   const [devices, setDevices] = useState([]);
@@ -14,7 +14,7 @@ function DeviceList({ selectedDeviceId, onSelectDevice }) {
 
       const deviceList = Object.entries(data)
         .map(([id, value]) => normalizeDeviceRecord(id, value))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => getDeviceTitle(left).localeCompare(getDeviceTitle(right)));
 
       setDevices(deviceList);
 
@@ -45,7 +45,7 @@ function DeviceList({ selectedDeviceId, onSelectDevice }) {
                 onClick={() => onSelectDevice(device.id)}
               >
                 <strong>{getDeviceTitle(device)}</strong>
-                {device.description ? <span>{device.description}</span> : null}
+                <span>{getDeviceSubtitle(device)}</span>
                 <span>{online ? "Online" : "Offline"}</span>
                 <span>State: {device.status.currentState || "UNKNOWN"}</span>
                 <span>Last seen: {device.status.lastSeen || "Not available"}</span>
