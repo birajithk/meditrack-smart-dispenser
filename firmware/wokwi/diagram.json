@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "author": "Birajith Kiritharajah",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 38.4, "left": -158.36, "attrs": {} },
+    { "type": "wokwi-servo", "id": "servo1", "top": 266.8, "left": -172.8, "attrs": {} },
+    { "type": "wokwi-led", "id": "led1", "top": 198, "left": -25, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 102.2,
+      "left": -19.2,
+      "attrs": { "color": "green", "xray": "1" }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": -36,
+      "left": -36.6,
+      "attrs": { "volume": "0.1" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "servo1:PWM", "esp:18", "green", [ "v29", "h192", "v-240", "h-48", "v-28.8" ] ],
+    [ "esp:5V", "servo1:V+", "red", [ "h-28.65", "v153.5" ] ],
+    [ "esp:2", "led1:A", "green", [ "h67.2", "v48", "h-9.6" ] ],
+    [ "bz1:1", "esp:GND.2", "green", [ "v0" ] ],
+    [ "esp:23", "bz1:2", "green", [ "h57.6", "v-48" ] ],
+    [ "esp:GND.1", "servo1:GND", "black", [ "h0" ] ],
+    [ "esp:19", "btn1:2.l", "green", [ "h0" ] ],
+    [ "esp:GND.3", "btn1:1.r", "black", [ "h28.8", "v-28.8", "h76.8" ] ],
+    [ "esp:GND.1", "led1:C", "black", [ "h-19.05", "v96", "h163.2", "v-9.6" ] ]
+  ],
+  "dependencies": {}
+}
