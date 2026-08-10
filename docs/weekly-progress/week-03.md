@@ -2,48 +2,44 @@
 
 ## Objectives
 
-- Implement zero-hardware device simulation
-- Connect simulated device to Firebase
-- Read medicine schedules from Firebase
-- Simulate alert, motor movement, and pill-removal detection
-- Update schedule status as Taken or Missed
-- Write dose logs to Firebase
-- Add dashboard controls for simulation testing
+- Set up Firebase Realtime Database
+- Create React dashboard using Vite
+- Connect dashboard to Firebase
+- Add medicine schedule creation form
+- Display medicine schedules from Firebase
+- Display placeholder device status
+- Prepare structure for dose logs
 
 ## Completed Work
 
-- Created `simulator/` module
-- Connected simulator to Firebase Realtime Database
-- Implemented simulated alert driver
-- Implemented simulated motor driver
-- Implemented simulated pill sensor driver
-- Implemented time-based schedule checking
-- Implemented Taken and Missed status updates
-- Implemented Firebase dose logging
-- Added dashboard simulation control panel
-- Tested automatic Taken scenario
-- Tested manual Taken scenario
-- Tested Missed scenario
+- Firebase project created
+- Realtime Database configured
+- React dashboard initialized
+- Firebase SDK installed
+- Firebase configuration connected through environment variables
+- Schedule form implemented
+- Schedule table implemented
+- Device status component implemented
+- Dose logs component implemented
+- Dashboard tested with sample medicine schedules
 
 ## Evidence
 
-- Simulator source code in `simulator/`
-- Dashboard simulation control in `dashboard/src/components/SimulationControl.jsx`
-- Firebase schedule updates
-- Firebase dose logs
-- GitHub commits
-- Screenshot/video evidence of dashboard and simulator terminal output
+- Dashboard source code in `dashboard/`
+- Firebase database storing schedule data
+- GitHub commits for dashboard setup and Firebase connection
+- Screenshot/video evidence can be added later
 
 ## Issues / Blockers
 
-- Real ESP32 hardware is not connected yet
-- Motor and pill sensor are simulated at this stage
-- Notification system is planned for a later week
+- ESP32 is not connected yet
+- Authentication is not implemented at this stage
+- Device status is currently manually inserted for testing
 
 ## Next Week Plan
 
-- Improve state machine structure
-- Add better error handling
-- Add repeated-dose prevention
-- Prepare firmware folder structure for future ESP32 implementation
-- Optionally start Wokwi/PlatformIO firmware skeleton without real hardware
+- Set up ESP32 firmware using PlatformIO
+- Connect ESP32 to Wi-Fi
+- Connect ESP32 to Firebase
+- Read medicine schedules from Firebase
+- Update device online/offline status from ESP32

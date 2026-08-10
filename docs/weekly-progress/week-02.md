@@ -2,44 +2,41 @@
 
 ## Objectives
 
-- Set up Firebase Realtime Database
-- Create React dashboard using Vite
-- Connect dashboard to Firebase
-- Add medicine schedule creation form
-- Display medicine schedules from Firebase
-- Display placeholder device status
-- Prepare structure for dose logs
+- Create GitHub repository
+- Define project problem
+- Identify functional and non-functional requirements
+- Design initial system architecture
+- Prepare initial database structure
+- Identify required hardware components
 
 ## Completed Work
 
-- Firebase project created
-- Realtime Database configured
-- React dashboard initialized
-- Firebase SDK installed
-- Firebase configuration connected through environment variables
-- Schedule form implemented
-- Schedule table implemented
-- Device status component implemented
-- Dose logs component implemented
-- Dashboard tested with sample medicine schedules
+- Repository initialized
+- Project README added
+- Problem statement documented
+- Requirements documented
+- Initial system architecture prepared
+- Firebase database structure drafted
+- Initial components list prepared
 
 ## Evidence
 
-- Dashboard source code in `dashboard/`
-- Firebase database storing schedule data
-- GitHub commits for dashboard setup and Firebase connection
-- Screenshot/video evidence can be added later
+- GitHub commits
+- README.md
+- docs/problem-statement.md
+- docs/requirements.md
+- docs/system-architecture.md
+- docs/database-design.md
+- hardware/components-list.md
 
 ## Issues / Blockers
 
-- ESP32 is not connected yet
-- Authentication is not implemented at this stage
-- Device status is currently manually inserted for testing
+- Final mechanical design not started yet
+- Sensor type to be finalized after testing
 
 ## Next Week Plan
 
-- Set up ESP32 firmware using PlatformIO
-- Connect ESP32 to Wi-Fi
-- Connect ESP32 to Firebase
-- Read medicine schedules from Firebase
-- Update device online/offline status from ESP32
+- Create Firebase project
+- Build initial dashboard UI
+- Add schedule creation form
+- Store schedule data in Firebase
