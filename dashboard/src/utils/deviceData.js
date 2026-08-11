@@ -2,17 +2,15 @@ export const DEFAULT_COMPARTMENT_COUNT = 3;
 
 export const COMPLETED_STATUSES = new Set(["taken", "missed", "completed"]);
 
-export function isDeviceOnline(status, staleSeconds = 60) {
-  if (!status?.online) return false;
-
-  const lastSeenEpoch = Number(status.lastSeenEpoch);
+export function isDeviceOnline(status, staleSeconds = 180) {
+  const lastSeenEpoch = Number(status?.lastSeenEpoch);
 
   if (!lastSeenEpoch) return false;
 
   const nowEpoch = Math.floor(Date.now() / 1000);
   const ageSeconds = nowEpoch - lastSeenEpoch;
 
-  return ageSeconds <= staleSeconds;
+  return status?.online !== false && ageSeconds <= staleSeconds;
 }
 
 export function normalizeDeviceRecord(deviceId, value = {}) {

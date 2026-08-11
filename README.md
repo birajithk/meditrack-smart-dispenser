@@ -1,51 +1,114 @@
 # MediTrack: Smart Medicine Dispenser
 
-## Project Overview
+MediTrack is an embedded medication adherence and caregiver monitoring system. It helps a patient take the correct medicine at the correct time and allows a caregiver to remotely monitor dose events.
 
-MediTrack is an embedded medication adherence system designed to help users take the correct medicine at the correct time. The system reminds the user, provides access to the correct medicine compartment, verifies pill removal, logs the event, and notifies a caregiver when a dose is missed.
+## Project Scope
 
-## Main Features
+The system supports:
 
-- Medicine schedule management
-- ESP32-based embedded control
-- RTC/NTP-based time checking
-- Buzzer and LED reminder
-- Motorized compartment access
-- Pill-removal detection
-- Dashboard-based monitoring
-- Taken/missed dose logging
-- Caregiver missed-dose notification
+- device registration using a unique printed Device ID
+- caregiver-friendly device names
+- medicine assignment to 3 compartments
+- one-time, weekly, and date-range schedules
+- ESP32-based device control
+- servo-based compartment positioning
+- LED and buzzer alerts
+- pill-removal detection
+- Taken/Missed dose classification
+- Firebase Realtime Database synchronisation
+- web dashboard monitoring
+- Telegram caregiver notification for missed doses
 
-## Technology Stack
+## Current Implementation Status
 
-- ESP32
-- Arduino framework / PlatformIO
+The project is currently in the software and virtual embedded simulation stage.
+
+Completed so far:
+
+- project proposal
+- GitHub repository setup
+- React dashboard
 - Firebase Realtime Database
-- React + Vite dashboard
-- Servo motor
-- IR pill-removal sensor
-- Buzzer and LED alerts
+- multi-device dashboard workflow
+- device registration using Device ID
+- schedule management
+- dose logs
+- Wokwi ESP32 simulation
+- servo/LED/buzzer/pill-sensor simulation
+- Taken/Missed classification
+- device heartbeat
+- offline detection
+- caregiver Telegram notification service
+- stuck Due schedule watchdog
 
-## Project Timeline
+## System Architecture
 
-| Week | Target |
-|---|---|
-| Week 1 | Project setup, requirements, architecture, GitHub repo |
-| Week 2 | Dashboard and database setup |
-| Week 3 | ESP32-Firebase connection |
-| Week 4 | Scheduling, time checking, buzzer/LED, motor test |
-| Week 5 | Pill-removal sensor and taken/missed logic |
-| Week 6 | Notification and reliability handling |
-| Week 7 | Full software + temporary hardware demo |
-| Week 8-14 | Mechanical enclosure, carousel, final integration, testing, exhibition |
+```mermaid
+flowchart TD
+    A[Caregiver Dashboard] --> B[Firebase Realtime Database]
+    B --> C[ESP32 / Wokwi Firmware]
+    C --> D[Servo Motor]
+    C --> E[LED and Buzzer]
+    C --> F[Pill Removal Sensor]
+    C --> B
+    B --> G[Notification Service]
+    G --> H[Telegram Caregiver Alert]```
 
-## Repository Structure
+Device Identity Model
 
-- `firmware/` - ESP32 firmware
-- `dashboard/` - React dashboard
-- `docs/` - project documentation
-- `hardware/` - mechanical and wiring notes
+Each physical dispenser has a unique Device ID printed on it.
 
-## Status
+Example:
 
-Project started. Weekly progress will be documented in `docs/weekly-progress/`.
+device001
+
+The same Device ID is programmed into the ESP32 firmware.
+
+The caregiver enters this Device ID in the dashboard and assigns:
+
+device name
+medicine in compartment 1
+medicine in compartment 2
+medicine in compartment 3
+pill-removal delay seconds
+
+Only these values are device-specific in firmware:
+
+Wi-Fi SSID
+Wi-Fi password
+Device ID
+Firmware Motor Mapping
+Position	Angle
+Home / default	0°
+Compartment 1	60°
+Compartment 2	120°
+Compartment 3	180°
+
+The dispenser returns to the home position after each Taken or Missed dose.
+
+Repository Structure
+dashboard/       React caregiver dashboard
+firmware/wokwi/  Wokwi ESP32 virtual firmware
+notifications/   Telegram missed-dose notification service
+docs/            Documentation, diagrams, test plans and weekly progress
+hardware/        Wiring and purchase planning
+Main Technologies
+ESP32
+Wokwi
+Arduino framework
+React + Vite
+Firebase Realtime Database
+Telegram Bot API
+GitHub
+Weekly Progress
+Week 1: Project proposal and initial planning
+Week 2: Dashboard and Firebase setup
+Week 3: Zero-hardware simulator and Wokwi start
+Week 4: Recurrence scheduling and multi-device workflow
+Week 5: Device ID model and dashboard workflow improvements
+Week 6: Firmware configuration retrieval and system refinement
+Week 7: Caregiver missed-dose notification and watchdog handling
+Safety Notice
+
+This project is an academic prototype using dummy pills. It is not a certified medical device
+
