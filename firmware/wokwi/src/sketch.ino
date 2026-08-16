@@ -16,7 +16,7 @@ const char* WIFI_PASSWORD = "";
 // Print this ID on the physical dispenser.
 // Caregiver adds the same ID in the dashboard.
 // =====================
-const String DEVICE_ID = "device002";
+const String DEVICE_ID = "device001";
 
 // =====================
 // Firebase config
@@ -63,9 +63,11 @@ const unsigned long SCHEDULE_CHECK_INTERVAL_MS = 3000;
 const unsigned long HEARTBEAT_INTERVAL_MS = 10000;
 const unsigned long DEVICE_CONFIG_RETRY_INTERVAL_MS = 10000;
 const unsigned long TIME_RESYNC_INTERVAL_MS = 60000;
+const unsigned long DEVICE_CONFIG_REFRESH_INTERVAL_MS = 60000;
 
-const int MIN_ALLOWED_DELAY_SECONDS = 10;
+const int MIN_ALLOWED_DELAY_SECONDS = 1;
 const int DEFAULT_ALLOWED_DELAY_SECONDS = 30;
+unsigned long lastDeviceConfigRefresh = 0;
 
 // Helps Wokwi/Firebase if schedule check is late.
 const long SCHEDULE_TRIGGER_GRACE_SECONDS = 300;
@@ -193,12 +195,6 @@ long scheduledEpochToday(String scheduledTime) {
 }
 
 int resolveAllowedDelaySeconds(JsonObject schedule) {
-  int scheduleDelay = schedule["allowedDelaySeconds"] | 0;
-
-  if (scheduleDelay >= MIN_ALLOWED_DELAY_SECONDS) {
-    return scheduleDelay;
-  }
-
   if (deviceDelaySeconds >= MIN_ALLOWED_DELAY_SECONDS) {
     return deviceDelaySeconds;
   }
@@ -325,6 +321,35 @@ void connectWiFi() {
 // Device config from Firebase
 // =====================
 
+String readCompartmentPillName(JsonVariant compartmentsVariant, int compartment) {
+  String key = String(compartment);
+
+  // Firebase REST sometimes returns numeric children as an array.
+  JsonArray compartmentArray = compartmentsVariant.as<JsonArray>();
+
+  if (!compartmentArray.isNull()) {
+    String pillName = compartmentArray[compartment]["pillName"] | "";
+
+    if (pillName != "") {
+      return pillName;
+    }
+  }
+
+  // Normal object format:
+  // compartments: { "1": { "pillName": "Vitamin A" } }
+  JsonObject compartmentObject = compartmentsVariant.as<JsonObject>();
+
+  if (!compartmentObject.isNull()) {
+    String pillName = compartmentObject[key]["pillName"] | "";
+
+    if (pillName != "") {
+      return pillName;
+    }
+  }
+
+  return "";
+}
+
 bool loadDeviceConfig() {
   String response;
   int code = firebaseGET("/devices/" + DEVICE_ID, response);
@@ -368,11 +393,10 @@ bool loadDeviceConfig() {
   Serial.print("[DEVICE] Default delay seconds: ");
   Serial.println(deviceDelaySeconds);
 
-  JsonObject compartments = doc["compartments"].as<JsonObject>();
+  JsonVariant compartments = doc["compartments"];
 
   for (int compartment = 1; compartment <= 3; compartment++) {
-    String key = String(compartment);
-    String pillName = compartments[key]["pillName"] | "";
+    String pillName = readCompartmentPillName(compartments, compartment);
 
     Serial.print("[DEVICE] Compartment ");
     Serial.print(compartment);
@@ -501,36 +525,38 @@ bool waitForPillRemoval(int timeoutSeconds) {
   Serial.print(timeoutSeconds);
   Serial.println(" seconds");
 
-  int initialRaw = digitalRead(PILL_SENSOR_PIN);
-  bool sensorWasActiveAtStart = isPillSensorActive();
-
-  Serial.print("[SENSOR] Initial raw value: ");
-  Serial.println(initialRaw);
-
-  if (sensorWasActiveAtStart) {
-    Serial.println("[SENSOR] Sensor is already active at wait start.");
-    Serial.println("[SENSOR] Waiting for it to become inactive before accepting a new removal event.");
-  }
+  Serial.println("[SENSOR] Press the button now to simulate pill removal.");
 
   unsigned long startTime = millis();
   unsigned long timeoutMs = (unsigned long)timeoutSeconds * 1000;
+  unsigned long lastDebugPrint = 0;
+
+  int previousRawValue = digitalRead(PILL_SENSOR_PIN);
+
+  Serial.print("[SENSOR] Initial raw value: ");
+  Serial.println(previousRawValue);
 
   while (millis() - startTime < timeoutMs) {
     maintainHeartbeat();
 
-    bool active = isPillSensorActive();
+    int rawValue = digitalRead(PILL_SENSOR_PIN);
 
-    if (sensorWasActiveAtStart) {
-      if (!active) {
-        sensorWasActiveAtStart = false;
-        Serial.println("[SENSOR] Sensor released. New removal event can now be detected.");
-      }
-
-      delay(250);
-      continue;
+    if (rawValue != previousRawValue) {
+      Serial.print("[SENSOR] Raw value changed: ");
+      Serial.println(rawValue);
+      previousRawValue = rawValue;
     }
 
-    if (active) {
+    if (millis() - lastDebugPrint >= 1000) {
+      Serial.print("[SENSOR] Current raw value: ");
+      Serial.print(rawValue);
+      Serial.print(" active=");
+      Serial.println(isPillSensorActive() ? "yes" : "no");
+
+      lastDebugPrint = millis();
+    }
+
+    if (isPillSensorActive()) {
       delay(120);
 
       if (isPillSensorActive()) {
@@ -539,7 +565,7 @@ bool waitForPillRemoval(int timeoutSeconds) {
       }
     }
 
-    delay(250);
+    delay(100);
   }
 
   Serial.println("[SENSOR] Pill not removed before timeout");
@@ -550,11 +576,63 @@ bool waitForPillRemoval(int timeoutSeconds) {
 // Schedule matching
 // =====================
 
-bool isSelectedWeekday(JsonObject weekdays, int day) {
-  if (day < 0) return false;
+bool isSelectedWeekday(JsonVariant weekdaysVariant, int day) {
+  if (day < 0 || day > 6) {
+    return false;
+  }
 
-  String key = String(day);
-  return weekdays[key] | false;
+  // Firebase REST may return numeric keys 0..6 as a JSON array.
+  JsonArray weekdayArray = weekdaysVariant.as<JsonArray>();
+
+  if (!weekdayArray.isNull()) {
+    return weekdayArray[day] | false;
+  }
+
+  // Normal object format:
+  // "weekdays": { "0": true, "1": true, ... }
+  JsonObject weekdayObject = weekdaysVariant.as<JsonObject>();
+
+  if (!weekdayObject.isNull()) {
+    String sundayBasedKey = String(day);
+
+    if (weekdayObject.containsKey(sundayBasedKey.c_str())) {
+      return weekdayObject[sundayBasedKey.c_str()] | false;
+    }
+
+    // Fallback for old Monday-based schedules.
+    int mondayBasedDay = (day + 6) % 7;
+    String mondayBasedKey = String(mondayBasedDay);
+
+    if (weekdayObject.containsKey(mondayBasedKey.c_str())) {
+      bool selected = weekdayObject[mondayBasedKey.c_str()] | false;
+
+      if (selected) {
+        Serial.println("[SCHEDULE] Weekday matched using fallback numbering");
+        return true;
+      }
+    }
+
+    const char* shortNames[] = {"sun", "mon", "tue", "wed", "thu", "fri", "sat"};
+    const char* longNames[] = {
+      "sunday",
+      "monday",
+      "tuesday",
+      "wednesday",
+      "thursday",
+      "friday",
+      "saturday"
+    };
+
+    if (weekdayObject.containsKey(shortNames[day])) {
+      return weekdayObject[shortNames[day]] | false;
+    }
+
+    if (weekdayObject.containsKey(longNames[day])) {
+      return weekdayObject[longNames[day]] | false;
+    }
+  }
+
+  return false;
 }
 
 bool dateIsWithinRange(String today, String startDate, String endDate) {
@@ -571,11 +649,11 @@ bool dateIsWithinRange(String today, String startDate, String endDate) {
 
 bool recurrenceMatchesToday(JsonObject schedule) {
   String today = todayKey();
+  int day = currentWeekday();
 
   JsonObject recurrence = schedule["recurrence"].as<JsonObject>();
 
   if (recurrence.isNull()) {
-    Serial.println("[SCHEDULE] Missing recurrence data");
     return false;
   }
 
@@ -588,27 +666,24 @@ bool recurrenceMatchesToday(JsonObject schedule) {
 
   if (type == "weekly") {
     String startDate = recurrence["startDate"] | "";
-    int day = currentWeekday();
+    JsonVariant weekdays = recurrence["weekdays"];
 
-    JsonObject weekdays = recurrence["weekdays"].as<JsonObject>();
+    bool withinRange = dateIsWithinRange(today, startDate, "");
+    bool weekdaySelected = isSelectedWeekday(weekdays, day);
 
-    return dateIsWithinRange(today, startDate, "") &&
-           isSelectedWeekday(weekdays, day);
+    return withinRange && weekdaySelected;
   }
 
   if (type == "range") {
     String startDate = recurrence["startDate"] | "";
     String endDate = recurrence["endDate"] | "";
-    int day = currentWeekday();
+    JsonVariant weekdays = recurrence["weekdays"];
 
-    JsonObject weekdays = recurrence["weekdays"].as<JsonObject>();
+    bool withinRange = dateIsWithinRange(today, startDate, endDate);
+    bool weekdaySelected = isSelectedWeekday(weekdays, day);
 
-    return dateIsWithinRange(today, startDate, endDate) &&
-           isSelectedWeekday(weekdays, day);
+    return withinRange && weekdaySelected;
   }
-
-  Serial.print("[SCHEDULE] Unknown recurrence type: ");
-  Serial.println(type);
 
   return false;
 }
@@ -645,15 +720,62 @@ bool scheduleIsDueNow(JsonObject schedule, int allowedDelaySeconds) {
 }
 
 // =====================
+// helper for schedules
+// =====================
+
+bool isOneTimeSchedule(JsonObject schedule) {
+  JsonObject recurrence = schedule["recurrence"].as<JsonObject>();
+
+  if (recurrence.isNull()) {
+    return false;
+  }
+
+  String type = recurrence["type"] | "";
+  return type == "once";
+}
+
+bool isScheduleCurrentlyRunning(JsonObject schedule) {
+  JsonObject currentRun = schedule["currentRun"].as<JsonObject>();
+
+  if (currentRun.isNull()) {
+    return false;
+  }
+
+  String runStatus = currentRun["status"] | "";
+  return runStatus == "due" || runStatus == "dispensing" || runStatus == "waiting";
+}
+
+void updateCurrentRunStatus(String scheduleId, String runStatus) {
+  String payload = "{";
+  payload += "\"currentRun\":{";
+  payload += "\"status\":\"" + jsonEscape(runStatus) + "\",";
+  payload += "\"updatedAt\":\"" + nowISO() + "\",";
+  payload += "\"updatedAtEpoch\":" + String(nowEpoch());
+  payload += "},";
+  payload += "\"updatedAt\":\"" + nowISO() + "\"";
+  payload += "}";
+
+  int code = firebasePATCH("/devices/" + DEVICE_ID + "/schedules/" + scheduleId, payload);
+
+  Serial.print("[FIREBASE] Current run status ");
+  Serial.print(runStatus);
+  Serial.print(" HTTP=");
+  Serial.println(code);
+}
+
+// =====================
 // Schedule and log updates
 // =====================
 
 void markScheduleDue(String scheduleId, String occurrence) {
   String payload = "{";
+  payload += "\"status\":\"active\",";
+  payload += "\"currentRun\":{";
   payload += "\"status\":\"due\",";
-  payload += "\"activeOccurrence\":\"" + jsonEscape(occurrence) + "\",";
+  payload += "\"occurrence\":\"" + jsonEscape(occurrence) + "\",";
   payload += "\"dueAt\":\"" + nowISO() + "\",";
-  payload += "\"dueAtEpoch\":" + String(nowEpoch()) + ",";
+  payload += "\"dueAtEpoch\":" + String(nowEpoch());
+  payload += "},";
   payload += "\"watchdogHandled\":false,";
   payload += "\"updatedAt\":\"" + nowISO() + "\"";
   payload += "}";
@@ -666,14 +788,26 @@ void markScheduleDue(String scheduleId, String occurrence) {
   Serial.println(code);
 }
 
-void finalizeScheduleStatus(String scheduleId, String status, String occurrence) {
+void finalizeScheduleStatus(String scheduleId, JsonObject schedule, String finalStatus, String occurrence) {
+  bool oneTime = isOneTimeSchedule(schedule);
+
   String payload = "{";
-  payload += "\"status\":\"" + jsonEscape(status) + "\",";
+
+  if (oneTime) {
+    payload += "\"status\":\"" + jsonEscape(finalStatus) + "\",";
+    payload += "\"enabled\":false,";
+    payload += "\"completedAt\":\"" + nowISO() + "\",";
+  } else {
+    payload += "\"status\":\"active\",";
+    payload += "\"enabled\":true,";
+    payload += "\"lastDoseStatus\":\"" + jsonEscape(finalStatus) + "\",";
+  }
+
   payload += "\"lastProcessedOccurrence\":\"" + jsonEscape(occurrence) + "\",";
   payload += "\"lastProcessedDate\":\"" + todayKey() + "\",";
   payload += "\"lastProcessedAt\":\"" + nowISO() + "\",";
   payload += "\"lastProcessedEpoch\":" + String(nowEpoch()) + ",";
-  payload += "\"activeOccurrence\":\"\",";
+  payload += "\"currentRun\":null,";
   payload += "\"watchdogHandled\":false,";
   payload += "\"updatedAt\":\"" + nowISO() + "\"";
   payload += "}";
@@ -683,7 +817,7 @@ void finalizeScheduleStatus(String scheduleId, String status, String occurrence)
   Serial.print("[FIREBASE] Schedule ");
   Serial.print(scheduleId);
   Serial.print(" finalized as ");
-  Serial.print(status);
+  Serial.print(finalStatus);
   Serial.print(" HTTP=");
   Serial.println(code);
 }
@@ -764,6 +898,8 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   markScheduleDue(scheduleId, occurrence);
 
   updateDeviceStatus("DISPENSING");
+  updateCurrentRunStatus(scheduleId, "dispensing");
+
   bool compartmentOpened = openCompartment(compartment);
 
   if (!compartmentOpened) {
@@ -781,6 +917,8 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   startAlert();
 
   updateDeviceStatus("WAITING_FOR_REMOVAL");
+  updateCurrentRunStatus(scheduleId, "waiting");
+
   bool removed = waitForPillRemoval(allowedDelaySeconds);
 
   String finalStatus = removed ? "taken" : "missed";
@@ -790,7 +928,7 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   updateDeviceStatus("RETURNING_HOME");
   returnToHome();
 
-  finalizeScheduleStatus(scheduleId, finalStatus, occurrence);
+  finalizeScheduleStatus(scheduleId, schedule, finalStatus, occurrence);
   writeDoseLog(medicineName, scheduledTime, currentHHMM(), finalStatus, compartment, occurrence);
 
   if (finalStatus == "missed") {
@@ -820,6 +958,9 @@ void checkSchedules() {
 
   resyncTimeIfNeeded();
 
+  Serial.print("[SCHEDULE] Checking device schedules at ");
+  Serial.println(currentHHMM());
+
   String response;
   int code = firebaseGET("/devices/" + DEVICE_ID + "/schedules", response);
 
@@ -830,7 +971,6 @@ void checkSchedules() {
   }
 
   if (response == "null") {
-    Serial.println("[SCHEDULE] No schedules found");
     return;
   }
 
@@ -843,9 +983,6 @@ void checkSchedules() {
     return;
   }
 
-  Serial.print("[SCHEDULE] Checking schedules at ");
-  Serial.println(currentHHMM());
-
   JsonObject schedules = doc.as<JsonObject>();
 
   for (JsonPair item : schedules) {
@@ -853,13 +990,23 @@ void checkSchedules() {
     JsonObject schedule = item.value().as<JsonObject>();
 
     bool enabled = schedule["enabled"] | false;
+    String status = schedule["status"] | "active";
+
+    if (!enabled) {
+      continue;
+    }
+
+    if (status == "taken" || status == "missed" || status == "completed") {
+      continue;
+    }
+
     String scheduledTime = schedule["time"] | "";
     String lastProcessedOccurrence = schedule["lastProcessedOccurrence"] | "";
 
     int allowedDelaySeconds = resolveAllowedDelaySeconds(schedule);
     String occurrence = occurrenceKey(scheduledTime);
 
-    if (!enabled) {
+    if (isScheduleCurrentlyRunning(schedule)) {
       continue;
     }
 
@@ -870,6 +1017,17 @@ void checkSchedules() {
     if (!scheduleIsDueNow(schedule, allowedDelaySeconds)) {
       continue;
     }
+
+    Serial.println();
+    Serial.println("[SCHEDULE] Due schedule found");
+    Serial.print("[SCHEDULE] Schedule ID: ");
+    Serial.println(scheduleId);
+    Serial.print("[SCHEDULE] Medicine: ");
+    Serial.println(schedule["medicineName"] | "Unknown");
+    Serial.print("[SCHEDULE] Time: ");
+    Serial.println(scheduledTime);
+    Serial.print("[SCHEDULE] Occurrence: ");
+    Serial.println(occurrence);
 
     processDose(scheduleId, schedule, occurrence);
     return;
@@ -897,6 +1055,7 @@ void setup() {
   setupTime();
 
   isDeviceRegistered = loadDeviceConfig();
+  lastDeviceConfigRefresh = millis();
 
   if (isDeviceRegistered) {
     updateDeviceStatus("IDLE");
@@ -934,6 +1093,7 @@ void loop() {
   }
 
   maintainHeartbeat();
+  // refreshDeviceConfigIfNeeded();
 
   if (currentMillis - lastScheduleCheck >= SCHEDULE_CHECK_INTERVAL_MS) {
     checkSchedules();
