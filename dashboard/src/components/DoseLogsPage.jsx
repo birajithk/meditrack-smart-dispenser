@@ -8,6 +8,30 @@ import {
   normalizeDeviceRecord,
 } from "../utils/deviceData";
 
+function formatLogDate(log) {
+  if (log.createdEpoch) {
+    return new Date(Number(log.createdEpoch) * 1000).toLocaleDateString();
+  }
+
+  if (log.createdAt) {
+    return new Date(log.createdAt).toLocaleDateString();
+  }
+
+  return "-";
+}
+
+function formatLogTime(log) {
+  if (log.createdEpoch) {
+    return new Date(Number(log.createdEpoch) * 1000).toLocaleTimeString();
+  }
+
+  if (log.createdAt) {
+    return new Date(log.createdAt).toLocaleTimeString();
+  }
+
+  return log.actualTime || "-";
+}
+
 function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
   const [devices, setDevices] = useState([]);
 
@@ -41,9 +65,16 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
 
     return Object.entries(selectedDevice.logs)
       .map(([id, value]) => ({ id, ...value }))
-      .sort((left, right) =>
-        String(right.createdAt || "").localeCompare(String(left.createdAt || ""))
-      );
+      .sort((left, right) => {
+        const rightValue = Number(right.createdEpoch || 0);
+        const leftValue = Number(left.createdEpoch || 0);
+
+        if (rightValue !== leftValue) {
+          return rightValue - leftValue;
+        }
+
+        return String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+      });
   }, [selectedDevice]);
 
   return (
@@ -96,6 +127,8 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
           <table>
             <thead>
               <tr>
+                <th>Date</th>
+                <th>Log time</th>
                 <th>Medicine</th>
                 <th>Scheduled time</th>
                 <th>Actual time</th>
@@ -107,6 +140,8 @@ function DoseLogsPage({ selectedDeviceId, onSelectDevice }) {
             <tbody>
               {logs.map((log) => (
                 <tr key={log.id} className={isMissedLog(log) ? "row-missed" : ""}>
+                  <td data-label="Date">{formatLogDate(log)}</td>
+                  <td data-label="Log time">{formatLogTime(log)}</td>
                   <td data-label="Medicine">{log.medicineName}</td>
                   <td data-label="Scheduled time">{log.scheduledTime}</td>
                   <td data-label="Actual time">{log.actualTime || "-"}</td>
