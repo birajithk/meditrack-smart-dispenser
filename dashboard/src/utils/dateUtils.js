@@ -20,10 +20,12 @@ export function addDays(dateString, days) {
 }
 
 export function selectedWeekdaysToObject(selectedWeekdays) {
+  const normalizedSelectedDays = selectedWeekdays.map((day) => Number(day));
+
   const result = {};
 
   WEEKDAYS.forEach((day) => {
-    result[String(day.value)] = selectedWeekdays.includes(day.value);
+    result[String(day.value)] = normalizedSelectedDays.includes(day.value);
   });
 
   return result;
@@ -41,7 +43,7 @@ export function recurrenceSummary(recurrence) {
   }
 
   const selectedDays = WEEKDAYS.filter(
-    (day) => recurrence.weekdays?.[String(day.value)]
+    (day) => recurrence.weekdays?.[String(day.value)] === true
   ).map((day) => day.short);
 
   const dayText = selectedDays.length > 0 ? selectedDays.join(", ") : "No days";
@@ -55,17 +57,4 @@ export function recurrenceSummary(recurrence) {
   }
 
   return "Unknown recurrence";
-}
-
-export function isDeviceOnline(status, staleSeconds = 60) {
-  if (!status?.online) return false;
-
-  const lastSeenEpoch = Number(status.lastSeenEpoch);
-
-  if (!lastSeenEpoch) return false;
-
-  const nowEpoch = Math.floor(Date.now() / 1000);
-  const ageSeconds = nowEpoch - lastSeenEpoch;
-
-  return ageSeconds <= staleSeconds;
 }
