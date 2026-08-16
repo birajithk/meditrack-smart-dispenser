@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { onValue, push, ref, set, update } from "firebase/database";
+import { onValue, push, ref, remove, set, update } from "firebase/database";
 import { database } from "../firebase";
 import {
   getCompartmentOptions,
   getDeviceDropdownLabel,
   getDeviceTitle,
-  isFinalOneTimeSchedule,
   normalizeDeviceRecord,
 } from "../utils/deviceData";
 import {
@@ -22,6 +21,8 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
 
   const [devices, setDevices] = useState([]);
   const [isPopupOpen, setIsPopupOpen] = useState(false);
+  const [mode, setMode] = useState("create");
+  const [editingScheduleId, setEditingScheduleId] = useState("");
 
   const [time, setTime] = useState("");
   const [compartment, setCompartment] = useState("");
@@ -56,27 +57,18 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
     [devices, selectedDeviceId]
   );
 
-  const schedules = useMemo(() => {
+  const allSchedules = useMemo(() => {
     if (!selectedScheduleDevice) return [];
 
     return Object.entries(selectedScheduleDevice.schedules || {})
       .map(([id, value]) => ({ id, ...value }))
-      .sort((left, right) => {
-        if (left.time === right.time) {
-          return String(left.medicineName).localeCompare(String(right.medicineName));
-        }
-
-        return String(left.time).localeCompare(String(right.time));
-      });
+      .sort((left, right) => String(left.time).localeCompare(String(right.time)));
   }, [selectedScheduleDevice]);
 
-  const activeSchedules = schedules.filter(
-    (schedule) => !isFinalOneTimeSchedule(schedule)
-  );
-
-  const completedSchedules = schedules.filter((schedule) =>
-    isFinalOneTimeSchedule(schedule)
-  );
+  const activeSchedules = allSchedules.filter((schedule) => {
+    const status = String(schedule.status || "active").toLowerCase();
+    return status !== "taken" && status !== "missed" && status !== "completed";
+  });
 
   const compartmentOptions = useMemo(
     () => getCompartmentOptions(selectedScheduleDevice),
@@ -86,6 +78,8 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
   const selectedCompartment = compartment || compartmentOptions[0]?.id || "";
 
   const resetForm = () => {
+    setMode("create");
+    setEditingScheduleId("");
     setTime("");
     setCompartment("");
     setRecurrenceType("once");
@@ -93,6 +87,21 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
     setStartDate(today);
     setEndDate(addDays(today, 4));
     setSelectedWeekdays([]);
+  };
+
+  const getSelectedWeekdaysFromObject = (weekdayObject = {}) => {
+    return WEEKDAYS.filter((day) => weekdayObject[String(day.value)] === true).map(
+      (day) => day.value
+    );
+  };
+
+  const isScheduleRunning = (schedule) => {
+    const runStatus = String(schedule?.currentRun?.status || "").toLowerCase();
+    return runStatus === "due" || runStatus === "dispensing" || runStatus === "waiting";
+  };
+
+  const hasScheduleProcessedBefore = (schedule) => {
+    return Boolean(schedule?.lastProcessedOccurrence);
   };
 
   const openAddSchedulePopup = () => {
@@ -108,6 +117,26 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
 
     resetForm();
     setCompartment(compartmentOptions[0].id);
+    setIsPopupOpen(true);
+  };
+
+  const openEditSchedulePopup = (schedule) => {
+    if (isScheduleRunning(schedule)) {
+      alert("This schedule is currently being processed by the device.");
+      return;
+    }
+
+    const recurrence = schedule.recurrence || {};
+
+    setMode("edit");
+    setEditingScheduleId(schedule.id);
+    setTime(schedule.time || "");
+    setCompartment(String(schedule.compartment || ""));
+    setRecurrenceType(recurrence.type || "once");
+    setRunDate(recurrence.runDate || today);
+    setStartDate(recurrence.startDate || today);
+    setEndDate(recurrence.endDate || addDays(today, 4));
+    setSelectedWeekdays(getSelectedWeekdaysFromObject(recurrence.weekdays || {}));
     setIsPopupOpen(true);
   };
 
@@ -210,72 +239,68 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
       return;
     }
 
-    const scheduleRef = push(ref(database, `devices/${selectedDeviceId}/schedules`));
-
-    await set(scheduleRef, {
+    const payload = {
       medicineName: selectedOption.pillName,
       time,
       compartment: Number(selectedOption.compartmentNumber),
       allowedDelaySeconds: Number(selectedScheduleDevice.delaySeconds) || 30,
       enabled: true,
-      status: "pending",
+      status: "active",
       recurrence: buildRecurrence(),
-      lastProcessedOccurrence: "",
-      createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+    };
+
+    if (mode === "edit" && editingScheduleId) {
+      await update(
+        ref(database, `devices/${selectedDeviceId}/schedules/${editingScheduleId}`),
+        payload
+      );
+
+      closePopup();
+      return;
+    }
+
+    const scheduleRef = push(ref(database, `devices/${selectedDeviceId}/schedules`));
+
+    await set(scheduleRef, {
+      ...payload,
+      lastProcessedOccurrence: "",
+      currentRun: null,
+      createdAt: new Date().toISOString(),
     });
 
     closePopup();
   };
 
   const toggleEnabled = async (schedule) => {
+    if (isScheduleRunning(schedule)) {
+      alert("This schedule is currently being processed by the device.");
+      return;
+    }
+
     await update(ref(database, `devices/${selectedDeviceId}/schedules/${schedule.id}`), {
       enabled: !schedule.enabled,
       updatedAt: new Date().toISOString(),
     });
   };
 
-  const renderScheduleTable = (title, rows, emptyMessage) => (
-    <div className="card">
-      <h2>{title}</h2>
+  const deleteSchedule = async (schedule) => {
+    if (isScheduleRunning(schedule)) {
+      alert("This schedule is currently being processed by the device.");
+      return;
+    }
 
-      {rows.length === 0 ? (
-        <p>{emptyMessage}</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Medicine</th>
-              <th>Time</th>
-              <th>Compartment</th>
-              <th>Recurrence</th>
-              <th>Status</th>
-              <th>Enabled</th>
-            </tr>
-          </thead>
+    if (hasScheduleProcessedBefore(schedule)) {
+      alert("This schedule has already been processed at least once. Disable it instead of deleting it.");
+      return;
+    }
 
-          <tbody>
-            {rows.map((schedule) => (
-              <tr key={schedule.id}>
-                <td data-label="Medicine">{schedule.medicineName}</td>
-                <td data-label="Time">{schedule.time}</td>
-                <td data-label="Compartment">{schedule.compartment}</td>
-                <td data-label="Recurrence">
-                  {recurrenceSummary(schedule.recurrence)}
-                </td>
-                <td data-label="Status">{schedule.status}</td>
-                <td data-label="Enabled">
-                  <button type="button" onClick={() => toggleEnabled(schedule)}>
-                    {schedule.enabled ? "Disable" : "Enable"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
+    const confirmed = window.confirm("Delete this schedule? This cannot be undone.");
+
+    if (!confirmed) return;
+
+    await remove(ref(database, `devices/${selectedDeviceId}/schedules/${schedule.id}`));
+  };
 
   return (
     <section className="page-card page-layout">
@@ -284,8 +309,8 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
           <div>
             <h2>Schedule Management</h2>
             <p>
-              Select a dispenser by device name, then create schedules for the
-              pills already assigned to that device.
+              Select a dispenser by device name, then manage active medicine
+              schedule templates. Completed dose history is available in Logs.
             </p>
           </div>
 
@@ -331,26 +356,66 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
         )}
       </div>
 
-      {renderScheduleTable(
-        "Active Schedules",
-        activeSchedules,
-        "No active schedules for this device."
-      )}
+      <div className="card">
+        <h2>Active Schedules</h2>
 
-      {renderScheduleTable(
-        "Completed One-Time Schedules",
-        completedSchedules,
-        "No completed one-time schedules yet."
-      )}
+        {activeSchedules.length === 0 ? (
+          <p>No active schedules for this device.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Medicine</th>
+                <th>Time</th>
+                <th>Compartment</th>
+                <th>Recurrence</th>
+                <th>Last dose</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {activeSchedules.map((schedule) => (
+                <tr key={schedule.id}>
+                  <td data-label="Medicine">{schedule.medicineName}</td>
+                  <td data-label="Time">{schedule.time}</td>
+                  <td data-label="Compartment">{schedule.compartment}</td>
+                  <td data-label="Recurrence">
+                    {recurrenceSummary(schedule.recurrence)}
+                  </td>
+                  <td data-label="Last dose">{schedule.lastDoseStatus || "-"}</td>
+                  <td data-label="Enabled">
+                    <button type="button" onClick={() => toggleEnabled(schedule)}>
+                      {schedule.enabled ? "Disable" : "Enable"}
+                    </button>
+                  </td>
+                  <td data-label="Actions">
+                    <div className="inline-buttons">
+                      <button type="button" onClick={() => openEditSchedulePopup(schedule)}>
+                        Edit
+                      </button>
+
+                      <button type="button" onClick={() => deleteSchedule(schedule)}>
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       {isPopupOpen && (
         <div className="modal-backdrop">
           <div className="modal-card card">
             <div className="section-header">
               <div>
-                <h2>Add new schedule</h2>
+                <h2>{mode === "edit" ? "Edit schedule" : "Add new schedule"}</h2>
                 <p>
-                  Schedule is being added for{" "}
+                  Schedule is for{" "}
                   <strong>{getDeviceTitle(selectedScheduleDevice)}</strong>.
                 </p>
               </div>
@@ -461,7 +526,9 @@ function ScheduleManagementPage({ selectedDeviceId, onSelectDevice }) {
                 </>
               )}
 
-              <button type="submit">Create schedule</button>
+              <button type="submit">
+                {mode === "edit" ? "Update schedule" : "Create schedule"}
+              </button>
             </form>
           </div>
         </div>
