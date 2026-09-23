@@ -1,7 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <ESP32Servo.h>
 #include <time.h>
 
 // =====================
@@ -24,30 +23,25 @@ const String DEVICE_ID = "device001";
 const String FIREBASE_URL = "https://meditrack-smart-dispenser-default-rtdb.firebaseio.com";
 
 // =====================
-// Pin config
+// LED compartment pins
 // =====================
-const int SERVO_PIN = 18;
-const int LED_PIN = 2;
-const int BUZZER_PIN = 23;
-const int PILL_SENSOR_PIN = 19;
+const int LED_COMPARTMENT_1_PIN = 2;
+const int LED_COMPARTMENT_2_PIN = 4;
+const int LED_COMPARTMENT_3_PIN = 5;
 
 // =====================
-// Pill sensor config
-// Wokwi pushbutton with INPUT_PULLUP:
-// not pressed = HIGH
-// pressed = LOW
+// IR sensor pins
 // =====================
-const bool PILL_SENSOR_ACTIVE_LOW = true;
+const int IR_COMPARTMENT_1_PIN = 18;
+const int IR_COMPARTMENT_2_PIN = 19;
+const int IR_COMPARTMENT_3_PIN = 21;
 
 // =====================
-// Motor angle config
-// 0 degrees is home/default.
-// No pill compartment is assigned to 0 degrees.
+// IR sensor behavior
+// Many obstacle avoidance IR modules output LOW when object is detected.
+// If your sensor works opposite, change this to false.
 // =====================
-const int HOME_ANGLE = 0;
-const int COMPARTMENT_1_ANGLE = 60;
-const int COMPARTMENT_2_ANGLE = 120;
-const int COMPARTMENT_3_ANGLE = 180;
+const bool IR_ACTIVE_LOW = true;
 
 // =====================
 // Time config
@@ -62,19 +56,19 @@ const int DAYLIGHT_OFFSET_SECONDS = 0;
 const unsigned long SCHEDULE_CHECK_INTERVAL_MS = 3000;
 const unsigned long HEARTBEAT_INTERVAL_MS = 10000;
 const unsigned long DEVICE_CONFIG_RETRY_INTERVAL_MS = 10000;
-const unsigned long TIME_RESYNC_INTERVAL_MS = 60000;
 const unsigned long DEVICE_CONFIG_REFRESH_INTERVAL_MS = 60000;
+const unsigned long TIME_RESYNC_INTERVAL_MS = 60000;
 
 const int MIN_ALLOWED_DELAY_SECONDS = 1;
 const int DEFAULT_ALLOWED_DELAY_SECONDS = 30;
-unsigned long lastDeviceConfigRefresh = 0;
 
-// Helps Wokwi/Firebase if schedule check is late.
+// Allows schedule to still trigger if Wokwi/Firebase/browser is slightly late.
 const long SCHEDULE_TRIGGER_GRACE_SECONDS = 300;
 
 unsigned long lastScheduleCheck = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long lastDeviceConfigRetry = 0;
+unsigned long lastDeviceConfigRefresh = 0;
 unsigned long lastTimeResync = 0;
 
 bool isProcessingDose = false;
@@ -83,8 +77,6 @@ bool isDeviceRegistered = false;
 String deviceName = "";
 int deviceDelaySeconds = DEFAULT_ALLOWED_DELAY_SECONDS;
 String currentDeviceState = "BOOTING";
-
-Servo compartmentServo;
 
 // =====================
 // Utility helpers
@@ -192,14 +184,6 @@ long scheduledEpochToday(String scheduledTime) {
   timeinfo.tm_sec = 0;
 
   return (long)mktime(&timeinfo);
-}
-
-int resolveAllowedDelaySeconds(JsonObject schedule) {
-  if (deviceDelaySeconds >= MIN_ALLOWED_DELAY_SECONDS) {
-    return deviceDelaySeconds;
-  }
-
-  return DEFAULT_ALLOWED_DELAY_SECONDS;
 }
 
 // =====================
@@ -321,10 +305,42 @@ void connectWiFi() {
 // Device config from Firebase
 // =====================
 
+String readJsonString(String response, String fallback) {
+  DynamicJsonDocument doc(256);
+  DeserializationError error = deserializeJson(doc, response);
+
+  if (error) {
+    return fallback;
+  }
+
+  const char* value = doc.as<const char*>();
+
+  if (value == nullptr) {
+    return fallback;
+  }
+
+  return String(value);
+}
+
+int readJsonInt(String response, int fallback) {
+  DynamicJsonDocument doc(256);
+  DeserializationError error = deserializeJson(doc, response);
+
+  if (error) {
+    return fallback;
+  }
+
+  if (!doc.is<int>()) {
+    return fallback;
+  }
+
+  return doc.as<int>();
+}
+
 String readCompartmentPillName(JsonVariant compartmentsVariant, int compartment) {
   String key = String(compartment);
 
-  // Firebase REST sometimes returns numeric children as an array.
+  // Firebase REST may return numeric children as an array.
   JsonArray compartmentArray = compartmentsVariant.as<JsonArray>();
 
   if (!compartmentArray.isNull()) {
@@ -340,7 +356,7 @@ String readCompartmentPillName(JsonVariant compartmentsVariant, int compartment)
   JsonObject compartmentObject = compartmentsVariant.as<JsonObject>();
 
   if (!compartmentObject.isNull()) {
-    String pillName = compartmentObject[key]["pillName"] | "";
+    String pillName = compartmentObject[key.c_str()]["pillName"] | "";
 
     if (pillName != "") {
       return pillName;
@@ -351,36 +367,44 @@ String readCompartmentPillName(JsonVariant compartmentsVariant, int compartment)
 }
 
 bool loadDeviceConfig() {
-  String response;
-  int code = firebaseGET("/devices/" + DEVICE_ID, response);
+  String deviceNameResponse;
+  int nameCode = firebaseGET("/devices/" + DEVICE_ID + "/deviceName", deviceNameResponse);
 
-  if (code != 200) {
-    Serial.print("[DEVICE] Failed to read device config. HTTP=");
-    Serial.println(code);
+  if (nameCode != 200) {
+    Serial.print("[DEVICE] Failed to read device name. HTTP=");
+    Serial.println(nameCode);
     return false;
   }
 
-  if (response == "null") {
+  if (deviceNameResponse == "null") {
     Serial.println("[DEVICE] Device ID is not registered in Firebase yet.");
     Serial.print("[DEVICE] Register this device ID from dashboard: ");
     Serial.println(DEVICE_ID);
     return false;
   }
 
-  DynamicJsonDocument doc(4096);
-  DeserializationError error = deserializeJson(doc, response);
+  deviceName = readJsonString(deviceNameResponse, DEVICE_ID);
 
-  if (error) {
-    Serial.print("[DEVICE] Failed to parse device config: ");
-    Serial.println(error.c_str());
-    return false;
+  String delayResponse;
+  int delayCode = firebaseGET("/devices/" + DEVICE_ID + "/delaySeconds", delayResponse);
+
+  if (delayCode == 200 && delayResponse != "null") {
+    deviceDelaySeconds = readJsonInt(delayResponse, DEFAULT_ALLOWED_DELAY_SECONDS);
+  } else {
+    deviceDelaySeconds = DEFAULT_ALLOWED_DELAY_SECONDS;
   }
-
-  deviceName = doc["deviceName"] | DEVICE_ID;
-  deviceDelaySeconds = doc["delaySeconds"] | DEFAULT_ALLOWED_DELAY_SECONDS;
 
   if (deviceDelaySeconds < MIN_ALLOWED_DELAY_SECONDS) {
     deviceDelaySeconds = DEFAULT_ALLOWED_DELAY_SECONDS;
+  }
+
+  String compartmentsResponse;
+  int compartmentsCode = firebaseGET("/devices/" + DEVICE_ID + "/compartments", compartmentsResponse);
+
+  DynamicJsonDocument compartmentsDoc(2048);
+
+  if (compartmentsCode == 200 && compartmentsResponse != "null") {
+    deserializeJson(compartmentsDoc, compartmentsResponse);
   }
 
   Serial.println();
@@ -393,7 +417,7 @@ bool loadDeviceConfig() {
   Serial.print("[DEVICE] Default delay seconds: ");
   Serial.println(deviceDelaySeconds);
 
-  JsonVariant compartments = doc["compartments"];
+  JsonVariant compartments = compartmentsDoc.as<JsonVariant>();
 
   for (int compartment = 1; compartment <= 3; compartment++) {
     String pillName = readCompartmentPillName(compartments, compartment);
@@ -408,6 +432,22 @@ bool loadDeviceConfig() {
   Serial.println();
 
   return true;
+}
+
+void refreshDeviceConfigIfNeeded() {
+  if (!isDeviceRegistered) {
+    return;
+  }
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastDeviceConfigRefresh < DEVICE_CONFIG_REFRESH_INTERVAL_MS) {
+    return;
+  }
+
+  Serial.println("[DEVICE] Refreshing device config...");
+  loadDeviceConfig();
+  lastDeviceConfigRefresh = currentMillis;
 }
 
 // =====================
@@ -442,125 +482,128 @@ void maintainHeartbeat() {
 }
 
 // =====================
-// Alert functions
+// LED functions
 // =====================
 
-void startAlert() {
-  digitalWrite(LED_PIN, HIGH);
+int getLedPinForCompartment(int compartment) {
+  if (compartment == 1) return LED_COMPARTMENT_1_PIN;
+  if (compartment == 2) return LED_COMPARTMENT_2_PIN;
+  if (compartment == 3) return LED_COMPARTMENT_3_PIN;
 
-  // Do not use tone() here.
-  // tone() can interfere with ESP32Servo PWM/LEDC in Wokwi and sometimes real ESP32.
-  digitalWrite(BUZZER_PIN, HIGH);
-
-  Serial.println("[ALERT] LED and buzzer ON");
+  return -1;
 }
 
-void stopAlert() {
-  digitalWrite(LED_PIN, LOW);
-
-  // Do not use noTone() because we are not using tone().
-  digitalWrite(BUZZER_PIN, LOW);
-
-  Serial.println("[ALERT] LED and buzzer OFF");
+void turnOffAllCompartmentLeds() {
+  digitalWrite(LED_COMPARTMENT_1_PIN, LOW);
+  digitalWrite(LED_COMPARTMENT_2_PIN, LOW);
+  digitalWrite(LED_COMPARTMENT_3_PIN, LOW);
 }
 
-// =====================
-// Motor functions
-// =====================
+bool turnOnCompartmentLed(int compartment) {
+  int ledPin = getLedPinForCompartment(compartment);
 
-int compartmentToAngle(int compartment) {
-  if (compartment == 1) return COMPARTMENT_1_ANGLE;
-  if (compartment == 2) return COMPARTMENT_2_ANGLE;
-  if (compartment == 3) return COMPARTMENT_3_ANGLE;
-
-  return HOME_ANGLE;
-}
-
-void returnToHome() {
-  Serial.println("[MOTOR] Returning to home position at 0 degrees");
-  compartmentServo.write(HOME_ANGLE);
-  delay(1000);
-  maintainHeartbeat();
-}
-
-bool openCompartment(int compartment) {
-  if (compartment < 1 || compartment > 3) {
-    Serial.print("[MOTOR] Invalid compartment: ");
+  if (ledPin == -1) {
+    Serial.print("[LED] Invalid compartment: ");
     Serial.println(compartment);
-    returnToHome();
+    turnOffAllCompartmentLeds();
     return false;
   }
 
-  int angle = compartmentToAngle(compartment);
+  turnOffAllCompartmentLeds();
 
-  Serial.print("[MOTOR] Opening compartment ");
+  digitalWrite(ledPin, HIGH);
+
+  Serial.print("[LED] Compartment ");
   Serial.print(compartment);
-  Serial.print(" at angle ");
-  Serial.println(angle);
+  Serial.println(" LED ON");
 
-  compartmentServo.write(angle);
-  delay(1200);
-  maintainHeartbeat();
-
-  Serial.println("[MOTOR] Compartment position reached");
   return true;
 }
 
 // =====================
-// Pill sensor functions
+// IR sensor functions
 // =====================
 
-bool isPillSensorActive() {
-  int rawValue = digitalRead(PILL_SENSOR_PIN);
+int getIrPinForCompartment(int compartment) {
+  if (compartment == 1) return IR_COMPARTMENT_1_PIN;
+  if (compartment == 2) return IR_COMPARTMENT_2_PIN;
+  if (compartment == 3) return IR_COMPARTMENT_3_PIN;
 
-  if (PILL_SENSOR_ACTIVE_LOW) {
+  return -1;
+}
+
+bool isIrObjectDetected(int compartment) {
+  int irPin = getIrPinForCompartment(compartment);
+
+  if (irPin == -1) {
+    return false;
+  }
+
+  int rawValue = digitalRead(irPin);
+
+  if (IR_ACTIVE_LOW) {
     return rawValue == LOW;
   }
 
   return rawValue == HIGH;
 }
 
-bool waitForPillRemoval(int timeoutSeconds) {
-  Serial.print("[SENSOR] Waiting for pill removal for ");
+bool waitForPillRemoval(int compartment, int timeoutSeconds) {
+  int irPin = getIrPinForCompartment(compartment);
+
+  if (irPin == -1) {
+    Serial.print("[SENSOR] Invalid IR compartment: ");
+    Serial.println(compartment);
+    return false;
+  }
+
+  Serial.print("[SENSOR] Waiting for pill removal from compartment ");
+  Serial.print(compartment);
+  Serial.print(" for ");
   Serial.print(timeoutSeconds);
   Serial.println(" seconds");
 
-  Serial.println("[SENSOR] Press the button now to simulate pill removal.");
+  bool initialDetected = isIrObjectDetected(compartment);
+
+  Serial.print("[SENSOR] Initial object detected: ");
+  Serial.println(initialDetected ? "yes" : "no");
 
   unsigned long startTime = millis();
   unsigned long timeoutMs = (unsigned long)timeoutSeconds * 1000;
   unsigned long lastDebugPrint = 0;
 
-  int previousRawValue = digitalRead(PILL_SENSOR_PIN);
-
-  Serial.print("[SENSOR] Initial raw value: ");
-  Serial.println(previousRawValue);
-
   while (millis() - startTime < timeoutMs) {
     maintainHeartbeat();
 
-    int rawValue = digitalRead(PILL_SENSOR_PIN);
-
-    if (rawValue != previousRawValue) {
-      Serial.print("[SENSOR] Raw value changed: ");
-      Serial.println(rawValue);
-      previousRawValue = rawValue;
-    }
+    bool currentDetected = isIrObjectDetected(compartment);
 
     if (millis() - lastDebugPrint >= 1000) {
-      Serial.print("[SENSOR] Current raw value: ");
-      Serial.print(rawValue);
-      Serial.print(" active=");
-      Serial.println(isPillSensorActive() ? "yes" : "no");
+      Serial.print("[SENSOR] Compartment ");
+      Serial.print(compartment);
+      Serial.print(" object detected: ");
+      Serial.println(currentDetected ? "yes" : "no");
 
       lastDebugPrint = millis();
     }
 
-    if (isPillSensorActive()) {
-      delay(120);
+    // Normal logic:
+    // If pill was detected at start, removal means it is no longer detected.
+    if (initialDetected && !currentDetected) {
+      delay(150);
 
-      if (isPillSensorActive()) {
+      if (!isIrObjectDetected(compartment)) {
         Serial.println("[SENSOR] Pill removal detected");
+        return true;
+      }
+    }
+
+    // Fallback:
+    // If no object was detected at start, accept clear sensor activity.
+    if (!initialDetected && currentDetected) {
+      delay(150);
+
+      if (isIrObjectDetected(compartment)) {
+        Serial.println("[SENSOR] Compartment activity detected");
         return true;
       }
     }
@@ -576,20 +619,39 @@ bool waitForPillRemoval(int timeoutSeconds) {
 // Schedule matching
 // =====================
 
+int resolveAllowedDelaySeconds(JsonObject schedule) {
+  // Use latest device-level delay from Firebase.
+  if (deviceDelaySeconds >= MIN_ALLOWED_DELAY_SECONDS) {
+    return deviceDelaySeconds;
+  }
+
+  return DEFAULT_ALLOWED_DELAY_SECONDS;
+}
+
+bool dateIsWithinRange(String today, String startDate, String endDate) {
+  if (startDate != "" && today < startDate) {
+    return false;
+  }
+
+  if (endDate != "" && today > endDate) {
+    return false;
+  }
+
+  return true;
+}
+
 bool isSelectedWeekday(JsonVariant weekdaysVariant, int day) {
   if (day < 0 || day > 6) {
     return false;
   }
 
-  // Firebase REST may return numeric keys 0..6 as a JSON array.
+  // Firebase REST may return numeric keys 0..6 as an array.
   JsonArray weekdayArray = weekdaysVariant.as<JsonArray>();
 
   if (!weekdayArray.isNull()) {
     return weekdayArray[day] | false;
   }
 
-  // Normal object format:
-  // "weekdays": { "0": true, "1": true, ... }
   JsonObject weekdayObject = weekdaysVariant.as<JsonObject>();
 
   if (!weekdayObject.isNull()) {
@@ -599,7 +661,7 @@ bool isSelectedWeekday(JsonVariant weekdaysVariant, int day) {
       return weekdayObject[sundayBasedKey.c_str()] | false;
     }
 
-    // Fallback for old Monday-based schedules.
+    // Fallback for old Monday-based versions.
     int mondayBasedDay = (day + 6) % 7;
     String mondayBasedKey = String(mondayBasedDay);
 
@@ -633,18 +695,6 @@ bool isSelectedWeekday(JsonVariant weekdaysVariant, int day) {
   }
 
   return false;
-}
-
-bool dateIsWithinRange(String today, String startDate, String endDate) {
-  if (startDate != "" && today < startDate) {
-    return false;
-  }
-
-  if (endDate != "" && today > endDate) {
-    return false;
-  }
-
-  return true;
 }
 
 bool recurrenceMatchesToday(JsonObject schedule) {
@@ -719,10 +769,6 @@ bool scheduleIsDueNow(JsonObject schedule, int allowedDelaySeconds) {
   return true;
 }
 
-// =====================
-// helper for schedules
-// =====================
-
 bool isOneTimeSchedule(JsonObject schedule) {
   JsonObject recurrence = schedule["recurrence"].as<JsonObject>();
 
@@ -742,25 +788,10 @@ bool isScheduleCurrentlyRunning(JsonObject schedule) {
   }
 
   String runStatus = currentRun["status"] | "";
-  return runStatus == "due" || runStatus == "dispensing" || runStatus == "waiting";
-}
 
-void updateCurrentRunStatus(String scheduleId, String runStatus) {
-  String payload = "{";
-  payload += "\"currentRun\":{";
-  payload += "\"status\":\"" + jsonEscape(runStatus) + "\",";
-  payload += "\"updatedAt\":\"" + nowISO() + "\",";
-  payload += "\"updatedAtEpoch\":" + String(nowEpoch());
-  payload += "},";
-  payload += "\"updatedAt\":\"" + nowISO() + "\"";
-  payload += "}";
-
-  int code = firebasePATCH("/devices/" + DEVICE_ID + "/schedules/" + scheduleId, payload);
-
-  Serial.print("[FIREBASE] Current run status ");
-  Serial.print(runStatus);
-  Serial.print(" HTTP=");
-  Serial.println(code);
+  return runStatus == "due" ||
+         runStatus == "indicating" ||
+         runStatus == "waiting";
 }
 
 // =====================
@@ -785,6 +816,21 @@ void markScheduleDue(String scheduleId, String occurrence) {
   Serial.print("[FIREBASE] Schedule ");
   Serial.print(scheduleId);
   Serial.print(" marked due HTTP=");
+  Serial.println(code);
+}
+
+void updateCurrentRunStatus(String scheduleId, String runStatus) {
+  String payload = "{";
+  payload += "\"status\":\"" + jsonEscape(runStatus) + "\",";
+  payload += "\"updatedAt\":\"" + nowISO() + "\",";
+  payload += "\"updatedAtEpoch\":" + String(nowEpoch());
+  payload += "}";
+
+  int code = firebasePATCH("/devices/" + DEVICE_ID + "/schedules/" + scheduleId + "/currentRun", payload);
+
+  Serial.print("[FIREBASE] Current run status ");
+  Serial.print(runStatus);
+  Serial.print(" HTTP=");
   Serial.println(code);
 }
 
@@ -829,7 +875,7 @@ void updateScheduleError(String scheduleId, String message, String occurrence) {
   payload += "\"lastProcessedOccurrence\":\"" + jsonEscape(occurrence) + "\",";
   payload += "\"lastProcessedAt\":\"" + nowISO() + "\",";
   payload += "\"lastProcessedEpoch\":" + String(nowEpoch()) + ",";
-  payload += "\"activeOccurrence\":\"\",";
+  payload += "\"currentRun\":null,";
   payload += "\"updatedAt\":\"" + nowISO() + "\"";
   payload += "}";
 
@@ -859,6 +905,7 @@ void writeDoseLog(
   payload += "\"actualTime\":\"" + jsonEscape(actualTime) + "\",";
   payload += "\"status\":\"" + jsonEscape(status) + "\",";
   payload += "\"compartment\":" + String(compartment) + ",";
+  payload += "\"sensor\":\"IR_" + String(compartment) + "\",";
   payload += "\"occurrence\":\"" + jsonEscape(occurrence) + "\",";
   payload += "\"notificationStatus\":\"" + notificationStatus + "\",";
   payload += "\"createdAt\":\"" + nowISO() + "\",";
@@ -889,6 +936,8 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   Serial.println(deviceName);
   Serial.print("[DOSE] Processing: ");
   Serial.println(medicineName);
+  Serial.print("[DOSE] Compartment: ");
+  Serial.println(compartment);
   Serial.print("[DOSE] Occurrence: ");
   Serial.println(occurrence);
   Serial.print("[DOSE] Allowed delay seconds: ");
@@ -897,14 +946,13 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
 
   markScheduleDue(scheduleId, occurrence);
 
-  updateDeviceStatus("DISPENSING");
-  updateCurrentRunStatus(scheduleId, "dispensing");
+  updateDeviceStatus("INDICATING_COMPARTMENT");
+  updateCurrentRunStatus(scheduleId, "indicating");
 
-  bool compartmentOpened = openCompartment(compartment);
+  bool ledStarted = turnOnCompartmentLed(compartment);
 
-  if (!compartmentOpened) {
-    stopAlert();
-    returnToHome();
+  if (!ledStarted) {
+    turnOffAllCompartmentLeds();
     updateScheduleError(scheduleId, "Invalid compartment number", occurrence);
     updateDeviceStatus("ERROR");
     delay(500);
@@ -913,20 +961,14 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
     return;
   }
 
-  updateDeviceStatus("ALERTING");
-  startAlert();
-
   updateDeviceStatus("WAITING_FOR_REMOVAL");
   updateCurrentRunStatus(scheduleId, "waiting");
 
-  bool removed = waitForPillRemoval(allowedDelaySeconds);
+  bool removed = waitForPillRemoval(compartment, allowedDelaySeconds);
+
+  turnOffAllCompartmentLeds();
 
   String finalStatus = removed ? "taken" : "missed";
-
-  stopAlert();
-
-  updateDeviceStatus("RETURNING_HOME");
-  returnToHome();
 
   finalizeScheduleStatus(scheduleId, schedule, finalStatus, occurrence);
   writeDoseLog(medicineName, scheduledTime, currentHHMM(), finalStatus, compartment, occurrence);
@@ -1041,15 +1083,15 @@ void checkSchedules() {
 void setup() {
   Serial.begin(115200);
 
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(PILL_SENSOR_PIN, INPUT_PULLUP);
+  pinMode(LED_COMPARTMENT_1_PIN, OUTPUT);
+  pinMode(LED_COMPARTMENT_2_PIN, OUTPUT);
+  pinMode(LED_COMPARTMENT_3_PIN, OUTPUT);
 
-  digitalWrite(LED_PIN, LOW);
-  digitalWrite(BUZZER_PIN, LOW);
+  pinMode(IR_COMPARTMENT_1_PIN, INPUT);
+  pinMode(IR_COMPARTMENT_2_PIN, INPUT);
+  pinMode(IR_COMPARTMENT_3_PIN, INPUT);
 
-  compartmentServo.attach(SERVO_PIN);
-  compartmentServo.write(HOME_ANGLE);
+  turnOffAllCompartmentLeds();
 
   connectWiFi();
   setupTime();
@@ -1062,11 +1104,10 @@ void setup() {
     lastHeartbeat = millis();
   }
 
-  Serial.println("[SYSTEM] MediTrack virtual ESP32 started");
-  Serial.println("[SYSTEM] Home angle: 0 degrees");
-  Serial.println("[SYSTEM] Compartment 1: 60 degrees");
-  Serial.println("[SYSTEM] Compartment 2: 120 degrees");
-  Serial.println("[SYSTEM] Compartment 3: 180 degrees");
+  Serial.println("[SYSTEM] MediTrack LED-guided medicine box started");
+  Serial.println("[SYSTEM] Compartment 1 LED: GPIO 2, IR: GPIO 18");
+  Serial.println("[SYSTEM] Compartment 2 LED: GPIO 4, IR: GPIO 19");
+  Serial.println("[SYSTEM] Compartment 3 LED: GPIO 5, IR: GPIO 21");
 }
 
 void loop() {
@@ -1084,6 +1125,7 @@ void loop() {
       if (isDeviceRegistered) {
         updateDeviceStatus("IDLE");
         lastHeartbeat = millis();
+        lastDeviceConfigRefresh = millis();
       }
 
       lastDeviceConfigRetry = currentMillis;
@@ -1093,7 +1135,7 @@ void loop() {
   }
 
   maintainHeartbeat();
-  // refreshDeviceConfigIfNeeded();
+  refreshDeviceConfigIfNeeded();
 
   if (currentMillis - lastScheduleCheck >= SCHEDULE_CHECK_INTERVAL_MS) {
     checkSchedules();
