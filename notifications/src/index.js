@@ -10,7 +10,6 @@ const inProgressPresenceItems = new Set();
 
 const DEVICE_STALE_SECONDS = 180;
 const DUE_EXTRA_GRACE_SECONDS = 60;
-const SCHEDULE_OFFLINE_EXTRA_GRACE_SECONDS = 60;
 const SCAN_INTERVAL_MS = 10000;
 
 function nowISO() {
@@ -30,39 +29,6 @@ function todayKey() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-function currentWeekday() {
-  return new Date().getDay();
-}
-
-function parseHHMM(timeText) {
-  if (!timeText || typeof timeText !== "string") return null;
-
-  const [hourText, minuteText] = timeText.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-  if (hour < 0 || hour > 23) return null;
-  if (minute < 0 || minute > 59) return null;
-
-  return { hour, minute };
-}
-
-function scheduledEpochToday(timeText) {
-  const parsed = parseHHMM(timeText);
-
-  if (!parsed) return 0;
-
-  const date = new Date();
-  date.setHours(parsed.hour, parsed.minute, 0, 0);
-
-  return Math.floor(date.getTime() / 1000);
-}
-
-function occurrenceKeyForToday(timeText) {
-  return `${todayKey()}_${timeText}`;
-}
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -77,7 +43,7 @@ function getDeviceName(deviceId, deviceData) {
 function getDeviceDelaySeconds(deviceData) {
   const delaySeconds = Number(deviceData?.delaySeconds);
 
-  if (Number.isFinite(delaySeconds) && delaySeconds >= 10) {
+  if (Number.isFinite(delaySeconds) && delaySeconds >= 1) {
     return delaySeconds;
   }
 
@@ -87,7 +53,7 @@ function getDeviceDelaySeconds(deviceData) {
 function getScheduleDelaySeconds(deviceData, schedule) {
   const scheduleDelay = Number(schedule?.allowedDelaySeconds);
 
-  if (Number.isFinite(scheduleDelay) && scheduleDelay >= 10) {
+  if (Number.isFinite(scheduleDelay) && scheduleDelay >= 1) {
     return scheduleDelay;
   }
 
@@ -105,46 +71,6 @@ function isDeviceOnline(deviceData) {
   return status.online !== false && ageSeconds <= DEVICE_STALE_SECONDS;
 }
 
-function dateIsWithinRange(currentDate, startDate, endDate) {
-  if (startDate && currentDate < startDate) return false;
-  if (endDate && currentDate > endDate) return false;
-
-  return true;
-}
-
-function isSelectedWeekday(weekdays, day) {
-  return weekdays?.[String(day)] === true;
-}
-
-function recurrenceMatchesToday(schedule) {
-  const recurrence = schedule?.recurrence;
-
-  if (!recurrence) return false;
-
-  const currentDate = todayKey();
-  const day = currentWeekday();
-
-  if (recurrence.type === "once") {
-    return recurrence.runDate === currentDate;
-  }
-
-  if (recurrence.type === "weekly") {
-    return (
-      dateIsWithinRange(currentDate, recurrence.startDate || "", "") &&
-      isSelectedWeekday(recurrence.weekdays || {}, day)
-    );
-  }
-
-  if (recurrence.type === "range") {
-    return (
-      dateIsWithinRange(currentDate, recurrence.startDate || "", recurrence.endDate || "") &&
-      isSelectedWeekday(recurrence.weekdays || {}, day)
-    );
-  }
-
-  return false;
-}
-
 function hasLogForOccurrence(deviceData, occurrence) {
   const logs = deviceData.logs || {};
   return Object.values(logs).some((log) => log.occurrence === occurrence);
@@ -152,7 +78,10 @@ function hasLogForOccurrence(deviceData, occurrence) {
 
 function isFinalScheduleStatus(status) {
   const normalized = String(status || "").toLowerCase();
-  return normalized === "taken" || normalized === "missed" || normalized === "completed";
+
+  return normalized === "taken" ||
+         normalized === "missed" ||
+         normalized === "completed";
 }
 
 function shouldNotify(log) {
@@ -212,7 +141,7 @@ function formatPresenceMessage(deviceId, deviceData, online) {
     `<b>Last state:</b> ${escapeHtml(deviceData?.status?.currentState || "UNKNOWN")}`,
     `<b>Last seen:</b> ${escapeHtml(deviceData?.status?.lastSeen || "-")}`,
     "",
-    "Please check power, Wi-Fi, or the dispenser connection.",
+    "Please check power, Wi-Fi, or the medicine box connection.",
   ].join("\n");
 }
 
@@ -264,42 +193,61 @@ function scheduleShouldBeMissedByWatchdog(deviceData, schedule) {
     return false;
   }
 
-  const scheduledTime = schedule.time || "";
-  const occurrence = occurrenceKeyForToday(scheduledTime);
-  const scheduledEpoch = scheduledEpochToday(scheduledTime);
-
-  if (!scheduledEpoch) return false;
-  if (!recurrenceMatchesToday(schedule)) return false;
-  if (schedule.lastProcessedOccurrence === occurrence) return false;
-  if (hasLogForOccurrence(deviceData, occurrence)) return false;
-
-  const delaySeconds = getScheduleDelaySeconds(deviceData, schedule);
-  const currentEpoch = nowEpoch();
-
   const currentRun = schedule.currentRun || {};
   const runStatus = String(currentRun.status || "").toLowerCase();
 
-  if (runStatus === "due" || runStatus === "dispensing" || runStatus === "waiting") {
-    const dueEpoch = Number(currentRun.dueAtEpoch || currentRun.updatedAtEpoch || scheduledEpoch);
-    const dueAgeSeconds = currentEpoch - dueEpoch;
+  const isRunning =
+    runStatus === "due" ||
+    runStatus === "indicating" ||
+    runStatus === "waiting" ||
+    runStatus === "dispensing"; // old compatibility
 
-    return dueAgeSeconds >= delaySeconds + DUE_EXTRA_GRACE_SECONDS;
+  // Important:
+  // The watchdog should only handle schedules the ESP32 already started.
+  // It should not create missed logs for normal future schedules.
+  if (!isRunning) {
+    return false;
   }
 
   if (isDeviceOnline(deviceData)) {
     return false;
   }
 
-  const scheduleAgeSeconds = currentEpoch - scheduledEpoch;
+  const scheduledTime = schedule.time || "";
+  const occurrence = currentRun.occurrence || "";
 
-  return scheduleAgeSeconds >= delaySeconds + SCHEDULE_OFFLINE_EXTRA_GRACE_SECONDS;
+  if (!occurrence) {
+    return false;
+  }
+
+  if (schedule.lastProcessedOccurrence === occurrence) {
+    return false;
+  }
+
+  if (hasLogForOccurrence(deviceData, occurrence)) {
+    return false;
+  }
+
+  const delaySeconds = getScheduleDelaySeconds(deviceData, schedule);
+  const dueEpoch = Number(currentRun.dueAtEpoch || currentRun.updatedAtEpoch || 0);
+
+  if (!dueEpoch) {
+    return false;
+  }
+
+  const dueAgeSeconds = nowEpoch() - dueEpoch;
+
+  return dueAgeSeconds >= delaySeconds + DUE_EXTRA_GRACE_SECONDS;
 }
 
 async function createWatchdogMissedLog(deviceId, deviceData, scheduleId, schedule) {
   const scheduledTime = schedule.time || "-";
-  const occurrence =
-    schedule?.currentRun?.occurrence ||
-    occurrenceKeyForToday(scheduledTime);
+  const currentRun = schedule.currentRun || {};
+  const occurrence = currentRun.occurrence || "";
+
+  if (!occurrence) {
+    return;
+  }
 
   const watchdogKey = `${deviceId}/${scheduleId}/${occurrence}`;
 
@@ -317,12 +265,13 @@ async function createWatchdogMissedLog(deviceId, deviceData, scheduleId, schedul
       actualTime: "Device offline / no response",
       status: "missed",
       compartment: schedule.compartment || "-",
+      sensor: schedule.compartment ? `IR_${schedule.compartment}` : "-",
       occurrence,
       notificationStatus: "pending",
       createdAt: nowISO(),
       createdEpoch: nowEpoch(),
       source: "watchdog",
-      reason: "Device did not complete scheduled dose before timeout",
+      reason: "Device stopped responding during active dose window",
     });
 
     const isOneTime = schedule?.recurrence?.type === "once";
@@ -368,15 +317,6 @@ async function processPresence(deviceId, deviceData) {
     return;
   }
 
-  const shouldSendOnlineNotification =
-    nextState === "online" && lastKnownState === "offline";
-
-  const shouldSendOfflineNotification =
-    nextState === "offline" && lastKnownState !== "offline";
-
-  const shouldSendNotification =
-    shouldSendOnlineNotification || shouldSendOfflineNotification;
-
   const presenceKey = `${deviceId}/${lastKnownState || "initial"}-to-${nextState}`;
 
   if (inProgressPresenceItems.has(presenceKey)) {
@@ -386,6 +326,8 @@ async function processPresence(deviceId, deviceData) {
   inProgressPresenceItems.add(presenceKey);
 
   try {
+    const shouldSendNotification = lastKnownState !== "";
+
     if (shouldSendNotification) {
       console.log(`[PRESENCE] Sending ${nextState} alert for ${deviceId}`);
       await sendTelegramMessage(formatPresenceMessage(deviceId, deviceData, online));
@@ -453,7 +395,7 @@ async function scanOnce() {
 
 function startNotificationService() {
   console.log("[NOTIFY] MediTrack notification service started");
-  console.log("[NOTIFY] Watching missed doses, recurring schedules, and device presence...");
+  console.log("[NOTIFY] Watching missed doses, LED-guided intake runs, and device presence...");
   console.log(`[NOTIFY] Device stale threshold: ${DEVICE_STALE_SECONDS}s`);
 
   const devicesRef = ref(database, "devices");
