@@ -557,16 +557,13 @@ bool waitForPillRemoval(int compartment, int timeoutSeconds) {
     return false;
   }
 
-  Serial.print("[SENSOR] Waiting for pill removal from compartment ");
+  Serial.print("[SENSOR] Waiting for hand access in compartment ");
   Serial.print(compartment);
   Serial.print(" for ");
   Serial.print(timeoutSeconds);
   Serial.println(" seconds");
 
-  bool initialDetected = isIrObjectDetected(compartment);
-
-  Serial.print("[SENSOR] Initial object detected: ");
-  Serial.println(initialDetected ? "yes" : "no");
+  Serial.println("[SENSOR] Hand access will be treated as pill removal confirmation.");
 
   unsigned long startTime = millis();
   unsigned long timeoutMs = (unsigned long)timeoutSeconds * 1000;
@@ -575,35 +572,23 @@ bool waitForPillRemoval(int compartment, int timeoutSeconds) {
   while (millis() - startTime < timeoutMs) {
     maintainHeartbeat();
 
-    bool currentDetected = isIrObjectDetected(compartment);
+    bool handDetected = isIrObjectDetected(compartment);
 
     if (millis() - lastDebugPrint >= 1000) {
       Serial.print("[SENSOR] Compartment ");
       Serial.print(compartment);
-      Serial.print(" object detected: ");
-      Serial.println(currentDetected ? "yes" : "no");
+      Serial.print(" hand/object detected: ");
+      Serial.println(handDetected ? "yes" : "no");
 
       lastDebugPrint = millis();
     }
 
-    // Normal logic:
-    // If pill was detected at start, removal means it is no longer detected.
-    if (initialDetected && !currentDetected) {
-      delay(150);
-
-      if (!isIrObjectDetected(compartment)) {
-        Serial.println("[SENSOR] Pill removal detected");
-        return true;
-      }
-    }
-
-    // Fallback:
-    // If no object was detected at start, accept clear sensor activity.
-    if (!initialDetected && currentDetected) {
-      delay(150);
+    if (handDetected) {
+      delay(250);
 
       if (isIrObjectDetected(compartment)) {
-        Serial.println("[SENSOR] Compartment activity detected");
+        Serial.println("[SENSOR] Hand access detected");
+        Serial.println("[SENSOR] Dose marked as taken");
         return true;
       }
     }
@@ -611,7 +596,8 @@ bool waitForPillRemoval(int compartment, int timeoutSeconds) {
     delay(100);
   }
 
-  Serial.println("[SENSOR] Pill not removed before timeout");
+  Serial.println("[SENSOR] No hand access detected before timeout");
+  Serial.println("[SENSOR] Dose marked as missed");
   return false;
 }
 
@@ -905,7 +891,7 @@ void writeDoseLog(
   payload += "\"actualTime\":\"" + jsonEscape(actualTime) + "\",";
   payload += "\"status\":\"" + jsonEscape(status) + "\",";
   payload += "\"compartment\":" + String(compartment) + ",";
-  payload += "\"sensor\":\"IR_" + String(compartment) + "\",";
+  payload += "\"verificationMethod\":\"IR_HAND_ACCESS\",";
   payload += "\"occurrence\":\"" + jsonEscape(occurrence) + "\",";
   payload += "\"notificationStatus\":\"" + notificationStatus + "\",";
   payload += "\"createdAt\":\"" + nowISO() + "\",";
@@ -949,6 +935,9 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
   updateDeviceStatus("INDICATING_COMPARTMENT");
   updateCurrentRunStatus(scheduleId, "indicating");
 
+  updateDeviceStatus("WAITING_FOR_REMOVAL");
+  updateCurrentRunStatus(scheduleId, "waiting");
+
   bool ledStarted = turnOnCompartmentLed(compartment);
 
   if (!ledStarted) {
@@ -960,9 +949,6 @@ void processDose(String scheduleId, JsonObject schedule, String occurrence) {
     isProcessingDose = false;
     return;
   }
-
-  updateDeviceStatus("WAITING_FOR_REMOVAL");
-  updateCurrentRunStatus(scheduleId, "waiting");
 
   bool removed = waitForPillRemoval(compartment, allowedDelaySeconds);
 
@@ -1087,9 +1073,13 @@ void setup() {
   pinMode(LED_COMPARTMENT_2_PIN, OUTPUT);
   pinMode(LED_COMPARTMENT_3_PIN, OUTPUT);
 
-  pinMode(IR_COMPARTMENT_1_PIN, INPUT);
-  pinMode(IR_COMPARTMENT_2_PIN, INPUT);
-  pinMode(IR_COMPARTMENT_3_PIN, INPUT);
+  // pinMode(IR_COMPARTMENT_1_PIN, INPUT);
+  // pinMode(IR_COMPARTMENT_2_PIN, INPUT);
+  // pinMode(IR_COMPARTMENT_3_PIN, INPUT);
+
+  pinMode(IR_COMPARTMENT_1_PIN, INPUT_PULLUP);
+  pinMode(IR_COMPARTMENT_2_PIN, INPUT_PULLUP);
+  pinMode(IR_COMPARTMENT_3_PIN, INPUT_PULLUP);
 
   turnOffAllCompartmentLeds();
 
